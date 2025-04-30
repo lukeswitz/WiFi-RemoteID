@@ -592,12 +592,27 @@ HTML_PAGE = '''
       background-color: black !important;
     }
     /* Toggle switch styling */
-    .switch { position: relative; display: inline-block; width: 40px; height: 20px; }
+    .switch { position: relative; display: inline-block; vertical-align: middle; width: 40px; height: 20px; }
     .switch input { opacity: 0; width: 0; height: 0; }
     .slider { position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0; background-color: #555; transition: .4s; border-radius: 20px; }
-    .slider:before { position: absolute; content: ""; height: 16px; width: 16px; left: 2px; bottom: 2px; background-color: lime; transition: .4s; border-radius: 50%; }
+    .slider:before {
+      position: absolute;
+      content: "";
+      height: 16px;
+      width: 16px;
+      left: 2px;
+      top: 50%;
+      background-color: lime;
+      border: 1px solid #9B30FF;
+      transition: .4s;
+      border-radius: 50%;
+      transform: translateY(-50%);
+    }
     .switch input:checked + .slider { background-color: lime; }
-    .switch input:checked + .slider:before { transform: translateX(20px); }
+    .switch input:checked + .slider:before {
+      transform: translateX(20px) translateY(-50%);
+      border: 1px solid #9B30FF;
+    }
     body, html { margin: 0; padding: 0; background-color: black; }
     #map { height: 100vh; }
     /* Layer control styling (bottom left) reduced by 30% */
@@ -659,26 +674,6 @@ HTML_PAGE = '''
       display: block;
       width: 100%;
       color: #FF00FF;
-    }
-  
-    @media screen and (max-width: 768px) {
-      #filterBox {
-        width: 90%;
-        max-width: none;
-        right: 5%;
-        left: 5%;
-        top: 5px;
-      }
-      #serialStatus {
-        width: 90%;
-        right: 5%;
-        left: 5%;
-        bottom: 5px;
-      }
-      
-      #layerControl {
-        bottom: 50px; /* Move up to avoid overlap with serial status */
-      }
     }
     
     @media screen and (min-width: 481px) and (max-width: 768px) {
@@ -774,11 +769,11 @@ HTML_PAGE = '''
     .leaflet-control-zoom-in:hover, .leaflet-control-zoom-out:hover { background-color: #222; }
     input#aliasInput {
       background-color: #222;
-      color: #FF00FF;
+      color: #87CEEB;         /* pastel blue (updated) */
       border: 1px solid #FF00FF;
-      padding: 2px;
-      font-size: 0.8em;
-      caret-color: #FF00FF;
+      padding: 4px;
+      font-size: 1.06em;
+      caret-color: #87CEEB;
       outline: none;
     }
     .leaflet-popup-content-wrapper input:not(#aliasInput) {
@@ -786,9 +781,9 @@ HTML_PAGE = '''
     }
     /* Popup button and input sizing */
     .leaflet-popup-content-wrapper button {
-      font-size: 0.9em;
-      padding: 4px;
-      margin-top: 5px;
+      font-size: 1.19em;
+      padding: 6px;
+      margin-top: 7px;
     }
     .leaflet-popup-content-wrapper input[type="text"],
     .leaflet-popup-content-wrapper input[type="range"] {
@@ -878,6 +873,135 @@ HTML_PAGE = '''
       -webkit-background-clip: text;
       -webkit-text-fill-color: transparent;
     }
+    /* Staleout slider styling – match popup sliders */
+    #staleoutSlider {
+      -webkit-appearance: none;
+      width: 80%;
+      height: 3px;
+      background: transparent;
+      border: none;
+      outline: none;
+    }
+    #staleoutSlider::-webkit-slider-runnable-track {
+      width: 100%;
+      height: 3px;
+      background: #9B30FF;
+      border: none;
+      border-radius: 0;
+    }
+    #staleoutSlider::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      height: 16px;
+      width: 16px;
+      background: lime;
+      border: 1px solid #9B30FF;
+      margin-top: -6.5px;
+      border-radius: 50%;
+      cursor: pointer;
+    }
+    /* Firefox */
+    #staleoutSlider::-moz-range-track {
+      width: 100%;
+      height: 3px;
+      background: #9B30FF;
+      border: none;
+      border-radius: 0;
+    }
+    #staleoutSlider::-moz-range-thumb {
+      height: 16px;
+      width: 16px;
+      background: lime;
+      border: 1px solid #9B30FF;
+      margin-top: -6.5px;
+      border-radius: 50%;
+      cursor: pointer;
+    }
+    /* IE */
+    #staleoutSlider::-ms-fill-lower,
+    #staleoutSlider::-ms-fill-upper {
+      background: #9B30FF;
+      border: none;
+      border-radius: 2px;
+    }
+    #staleoutSlider::-ms-thumb {
+      height: 16px;
+      width: 16px;
+      background: lime;
+      border: 1px solid #9B30FF;
+      border-radius: 50%;
+      cursor: pointer;
+      margin-top: -6.5px;
+    }
+
+    /* Popup range sliders styling */
+    .leaflet-popup-content-wrapper input[type="range"] {
+      -webkit-appearance: none;
+      width: 100%;
+      height: 3px;
+      background: transparent;
+      border: none;
+    }
+    .leaflet-popup-content-wrapper input[type="range"]::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      height: 16px;
+      width: 16px;
+      background: lime;
+      border: 1px solid #9B30FF;
+      margin-top: -6.5px;
+      border-radius: 50%;
+      cursor: pointer;
+    }
+    .leaflet-popup-content-wrapper input[type="range"]::-moz-range-thumb {
+      height: 16px;
+      width: 16px;
+      background: lime;
+      border: 1px solid #9B30FF;
+      margin-top: -6.5px;
+      border-radius: 50%;
+      cursor: pointer;
+    }
+    /* Ensure popup sliders have the same track styling */
+    .leaflet-popup-content-wrapper input[type="range"]::-webkit-slider-runnable-track {
+      width: 100%;
+      height: 3px;
+      background: #9B30FF;
+      border: 1px solid lime;
+      border-radius: 0;
+    }
+    .leaflet-popup-content-wrapper input[type="range"]::-moz-range-track {
+      width: 100%;
+      height: 3px;
+      background: #9B30FF;
+      border: 1px solid lime;
+      border-radius: 0;
+    }
+
+    /* 1) Remove rounded corners from all sliders */
+    /* WebKit */
+    input[type="range"]::-webkit-slider-runnable-track,
+    input[type="range"]::-webkit-slider-thumb {
+      border-radius: 0;
+    }
+    /* Firefox */
+    input[type="range"]::-moz-range-track,
+    input[type="range"]::-moz-range-thumb {
+      border-radius: 0;
+    }
+    /* IE */
+    input[type="range"]::-ms-fill-lower,
+    input[type="range"]::-ms-fill-upper,
+    input[type="range"]::-ms-thumb {
+      border-radius: 0;
+    }
+
+    /* 2) Smaller, side-by-side Observer buttons */
+    .leaflet-popup-content-wrapper #lock-observer,
+    .leaflet-popup-content-wrapper #unlock-observer {
+      display: inline-block;
+      font-size: 0.9em;
+      padding: 4px 6px;
+      margin: 2px 4px 2px 0;
+    }
   </style>
 </head>
 <body>
@@ -914,7 +1038,7 @@ HTML_PAGE = '''
         <button id="downloadAliases">Aliases</button>
       </div>
     </div>
-    <div style="margin-top:8px; text-align:center;">
+    <div style="margin-top:8px; display:flex; align-items:center; justify-content:center; height:20px;">
       <label style="color:lime; font-family:monospace; margin-right:8px;">Node Mode</label>
       <label class="switch">
         <input type="checkbox" id="nodeModeMainSwitch">
@@ -925,7 +1049,7 @@ HTML_PAGE = '''
       Polls detections every second instead of every 200 ms to reduce CPU/battery use and optimizes API for Node Mode.
     </div>
     <div id="zmqSection" style="margin-top:8px; text-align:center;">
-      <div style="margin-top:8px; text-align:center;">
+      <div style="margin-top:8px; display:flex; align-items:center; justify-content:center; height:20px;">
         <label style="color:lime; font-family:monospace; margin-right:8px;">ZMQ Mode</label>
         <label class="switch">
           <input type="checkbox" id="zmqModeSwitch">
@@ -944,6 +1068,13 @@ HTML_PAGE = '''
         Connect to ZMQ decoder via direct IP connection
       </div>
     </div>
+    <!-- Staleout Slider -->
+    <div style="margin-top:8px; text-align:center;">
+      <label style="color:lime; font-family:monospace; margin-bottom:4px; display:block;">Staleout Time</label>
+      <input type="range" id="staleoutSlider" min="1" max="5" step="1" value="1" 
+             style="width:80%; border:1px solid lime; margin-bottom:4px;">
+      <div id="staleoutValue" style="color:lime; font-family:monospace;">1 min</div>
+    </div>
   </div>
 </div>
 <div id="serialStatus">
@@ -960,6 +1091,18 @@ HTML_PAGE = '''
   })();
 // --- Node Mode Main Switch & Polling Interval Sync ---
 document.addEventListener('DOMContentLoaded', () => {
+  // restore follow-lock on reload
+  const storedLock = localStorage.getItem('followLock');
+  if (storedLock) {
+    try {
+      followLock = JSON.parse(storedLock);
+      if (followLock.type === 'observer') {
+        updateObserverPopupButtons();
+      } else if (followLock.type === 'drone' || followLock.type === 'pilot') {
+        updateMarkerButtons(followLock.type, followLock.id);
+      }
+    } catch (e) { console.error('Failed to restore followLock', e); }
+  }
   // Ensure Node Mode default is off if unset
   if (localStorage.getItem('nodeMode') === null) {
     localStorage.setItem('nodeMode', 'false');
@@ -1027,6 +1170,20 @@ document.addEventListener('DOMContentLoaded', () => {
       })
       .catch(err => console.error('Error fetching ZMQ settings:', err));
   }
+
+  // Staleout slider initialization
+  const staleoutSlider = document.getElementById('staleoutSlider');
+  const staleoutValue = document.getElementById('staleoutValue');
+  if (staleoutSlider && typeof STALE_THRESHOLD !== 'undefined') {
+    staleoutSlider.value = STALE_THRESHOLD / 60;
+    staleoutValue.textContent = (STALE_THRESHOLD / 60) + ' min';
+    staleoutSlider.oninput = () => {
+      const minutes = parseInt(staleoutSlider.value, 10);
+      STALE_THRESHOLD = minutes * 60;
+      staleoutValue.textContent = minutes + ' min';
+      localStorage.setItem('staleoutMinutes', minutes.toString());
+    };
+  }
 });
 // Optimize tile loading for smooth zoom and aggressive preloading
 L.Map.prototype.options.fadeAnimation = false;
@@ -1077,21 +1234,34 @@ if (localStorage.getItem('colorOverrides')) {
   catch(e){ window.colorOverrides = {}; }
 } else { window.colorOverrides = {}; }
 
+// Restore historical drones from localStorage
 if (localStorage.getItem('historicalDrones')) {
   try { window.historicalDrones = JSON.parse(localStorage.getItem('historicalDrones')); }
-  catch(e){ window.historicalDrones = {}; }
-} else { window.historicalDrones = {}; }
+  catch(e) { window.historicalDrones = {}; }
+} else {
+  window.historicalDrones = {};
+}
 
+// Restore map center and zoom from localStorage
 let persistedCenter = localStorage.getItem('mapCenter');
 let persistedZoom = localStorage.getItem('mapZoom');
 if (persistedCenter) {
-  try { persistedCenter = JSON.parse(persistedCenter); } catch(e){ persistedCenter = null; }
-} else { persistedCenter = null; }
-persistedZoom = persistedZoom ? parseInt(persistedZoom) : null;
+  try { persistedCenter = JSON.parse(persistedCenter); } catch(e) { persistedCenter = null; }
+} else {
+  persistedCenter = null;
+}
+persistedZoom = persistedZoom ? parseInt(persistedZoom, 10) : null;
 
+// Application-level globals
 var aliases = {};
 var colorOverrides = window.colorOverrides;
-const STALE_THRESHOLD = 60;  // changed from 300 to 60 seconds for stale threshold in client side code
+
+// Load stale-out minutes from localStorage (default 1) and compute threshold in seconds
+if (localStorage.getItem('staleoutMinutes') === null) {
+  localStorage.setItem('staleoutMinutes', '1');
+}
+let STALE_THRESHOLD = parseInt(localStorage.getItem('staleoutMinutes'), 10) * 60;
+
 var comboListItems = {};
 
 async function updateAliases() {
@@ -1146,8 +1316,12 @@ function updateObserverEmoji() {
   }
 }
 
-function lockObserver() { followLock = { type: 'observer', id: 'observer', enabled: true }; updateObserverPopupButtons(); }
-function unlockObserver() { followLock = { type: null, id: null, enabled: false }; updateObserverPopupButtons(); }
+function lockObserver() { followLock = { type: 'observer', id: 'observer', enabled: true }; updateObserverPopupButtons();
+  localStorage.setItem('followLock', JSON.stringify(followLock));
+}
+function unlockObserver() { followLock = { type: null, id: null, enabled: false }; updateObserverPopupButtons();
+  localStorage.setItem('followLock', JSON.stringify(followLock));
+}
 function updateObserverPopupButtons() {
   var observerLocked = (followLock.enabled && followLock.type === 'observer');
   var lockBtn = document.getElementById("lock-observer");
@@ -1159,13 +1333,15 @@ function updateObserverPopupButtons() {
 function generatePopupContent(detection, markerType) {
   let content = '';
   let aliasText = aliases[detection.mac] ? aliases[detection.mac] : "No Alias";
-  content += '<strong>ID:</strong> <span id="aliasDisplay_' + detection.mac + '" style="color:#FF00FF;">' + aliasText + '</span> (MAC: ' + detection.mac + ')<br>';
+  content += '<strong>ID:</strong> <span id="aliasDisplay_' + detection.mac + '" style="color:#87CEEB;">' + aliasText + '</span> (MAC: ' + detection.mac + ')<br>';
   
-  if (detection.basic_id) {
-    content += '<div style="border:2px solid #FF00FF; padding:5px; margin:5px 0;">FAA RemoteID: ' + detection.basic_id + '</div>';
-    // Button for querying FAA API.
-    content += '<button onclick="queryFaaAPI(\\\'' + detection.mac + '\\\', \\\'' + detection.basic_id + '\\\')" id="queryFaaButton_' + detection.mac + '">Query FAA API</button>';
-    // FAA data display container.
+  if (detection.basic_id || detection.faa_data) {
+    if (detection.basic_id) {
+      content += '<div style="border:2px solid #FF00FF; padding:5px; margin:5px 0;">FAA RemoteID: ' + detection.basic_id + '</div>';
+    }
+    if (detection.basic_id) {
+      content += '<button onclick="queryFaaAPI(\\\'' + detection.mac + '\\\', \\\'' + detection.basic_id + '\\\')" id="queryFaaButton_' + detection.mac + '">Query FAA API</button>';
+    }
     content += '<div id="faaResult_' + detection.mac + '" style="margin-top:5px;">';
     if (detection.faa_data) {
       let faaData = detection.faa_data;
@@ -1174,7 +1350,6 @@ function generatePopupContent(detection, markerType) {
         item = faaData.data.items[0];
       }
       if (item) {
-        // Only display specific fields in the desired order.
         const fields = ["makeName", "modelName", "series", "trackingNumber", "complianceCategories", "updatedAt"];
         content += '<div style="border:2px solid #FF69B4; padding:5px; margin:5px 0;">';
         fields.forEach(function(field) {
@@ -1207,7 +1382,7 @@ function generatePopupContent(detection, markerType) {
   content += `<hr style="border: 1px solid lime;">
               <label for="aliasInput">Alias:</label>
               <input type="text" id="aliasInput" onclick="event.stopPropagation();" ontouchstart="event.stopPropagation();" 
-                     style="background-color: #222; color: #FF00FF; border: 1px solid #FF00FF;" 
+                     style="background-color: #222; color: #87CEEB; border: 1px solid #FF00FF;" 
                      value="${aliases[detection.mac] ? aliases[detection.mac] : ''}"><br>
               <button onclick="saveAlias('${detection.mac}')">Save Alias</button>
               <button onclick="clearAlias('${detection.mac}')">Clear Alias</button><br>`;
@@ -1312,6 +1487,7 @@ function lockMarker(markerType, id) {
   // Update buttons for this id in both drone and pilot sections
   updateMarkerButtons('drone', id);
   updateMarkerButtons('pilot', id);
+  localStorage.setItem('followLock', JSON.stringify(followLock));
   // If another id was locked before, clear its button states
   if (prevId && prevId !== id) {
     updateMarkerButtons('drone', prevId);
@@ -1326,6 +1502,7 @@ function unlockMarker(markerType, id) {
     // Update buttons for this id in both drone and pilot sections
     updateMarkerButtons('drone', id);
     updateMarkerButtons('pilot', id);
+    localStorage.setItem('followLock', JSON.stringify(followLock));
   }
 }
 
@@ -1667,7 +1844,7 @@ function updateComboList(data) {
   
   persistentMACs.forEach(mac => {
     let detection = data[mac];
-    let isActive = detection && ((currentTime - detection.last_update) <= 60);  // changed from 300 to 60 seconds
+    let isActive = detection && ((currentTime - detection.last_update) <= STALE_THRESHOLD);
     let item = comboListItems[mac];
     if (!item) {
       item = document.createElement("div");
@@ -1717,14 +1894,14 @@ async function updateData() {
     for (const mac in data) { if (!persistentMACs.includes(mac)) { persistentMACs.push(mac); } }
     for (const mac in data) {
       if (historicalDrones[mac]) {
-        if (data[mac].last_update > historicalDrones[mac].lockTime || (currentTime - historicalDrones[mac].lockTime) > 60) {  // changed from 300 to 60
+        if (data[mac].last_update > historicalDrones[mac].lockTime || (currentTime - historicalDrones[mac].lockTime) > STALE_THRESHOLD) {
           delete historicalDrones[mac];
           localStorage.setItem('historicalDrones', JSON.stringify(historicalDrones));
           if (droneBroadcastRings[mac]) { map.removeLayer(droneBroadcastRings[mac]); delete droneBroadcastRings[mac]; }
         } else { continue; }
       }
       const det = data[mac];
-      if (!det.last_update || (currentTime - det.last_update > 60)) {  // changed from 300 to 60 seconds
+      if (!det.last_update || (currentTime - det.last_update > STALE_THRESHOLD)) {
         if (droneMarkers[mac]) { map.removeLayer(droneMarkers[mac]); delete droneMarkers[mac]; }
         if (pilotMarkers[mac]) { map.removeLayer(pilotMarkers[mac]); delete pilotMarkers[mac]; }
         if (droneCircles[mac]) { map.removeLayer(droneCircles[mac]); delete droneCircles[mac]; }
