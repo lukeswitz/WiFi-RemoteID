@@ -639,9 +639,26 @@ HTML_PAGE = '''
       font-family: monospace;
       max-width: 300px;
       max-height: 80vh;
-      overflow-y: auto;
       z-index: 1000;
-      width: 280px; /* Fixed width on larger screens */
+    }
+    #filterBox.collapsed #filterContent {
+      display: none;
+    }
+    #filterBox:not(.collapsed) #filterHeader h3 {
+      visibility: hidden;
+    }
+    #filterHeader {
+      display: flex;
+      align-items: center;
+    }
+    #filterHeader h3 {
+      flex: 1;
+      text-align: center;
+      margin: 0;
+      font-size: 1em;
+      display: block;
+      width: 100%;
+      color: #FF00FF;
     }
   
     @media screen and (max-width: 768px) {
