@@ -499,15 +499,19 @@ HTML_PAGE = '''
       padding: 3.5px; /* reduced from 5px */
       border: 0.7px solid lime; /* reduced border thickness */
       border-radius: 7px; /* reduced from 10px */
-      color: lime;
+      color: #FF00FF;
       font-family: monospace;
       font-size: 0.7em; /* scale font by 70% */
       z-index: 1000;
     }
+    /* Basemap label always neon pink */
+    #layerControl > label {
+      color: #FF00FF;
+    }
     #layerControl select,
     #layerControl select option {
       background-color: #333;
-      color: #FF00FF;
+      color: lime;
       border: none;
       padding: 2.1px;
       font-size: 0.7em;
@@ -1388,8 +1392,8 @@ document.getElementById("layerSelect").addEventListener("change", function() {
   map.options.maxZoom = maxAllowed;
   localStorage.setItem('basemap', value);
   this.style.backgroundColor = "rgba(0,0,0,0.8)";
-  this.style.color = "#FF00FF";
-  setTimeout(() => { this.style.backgroundColor = "rgba(0,0,0,0.8)"; this.style.color = "#FF00FF"; }, 500);
+  this.style.color = "lime";
+  setTimeout(() => { this.style.backgroundColor = "rgba(0,0,0,0.8)"; this.style.color = "lime"; }, 500);
 });
 
 let persistentMACs = [];
