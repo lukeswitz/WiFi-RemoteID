@@ -1160,15 +1160,27 @@ async function queryFaaAPI(mac, remote_id) {
 }
 
 function lockMarker(markerType, id) {
+  // Remember previous lock so we can clear its buttons
+  const prevId = followLock.id;
+  // Set new lock
   followLock = { type: markerType, id: id, enabled: true };
+  // Update buttons for this id in both drone and pilot sections
   updateMarkerButtons('drone', id);
   updateMarkerButtons('pilot', id);
+  // If another id was locked before, clear its button states
+  if (prevId && prevId !== id) {
+    updateMarkerButtons('drone', prevId);
+    updateMarkerButtons('pilot', prevId);
+  }
 }
 
 function unlockMarker(markerType, id) {
   if (followLock.enabled && followLock.type === markerType && followLock.id === id) {
+    // Clear the lock
     followLock = { type: null, id: null, enabled: false };
-    updateMarkerButtons(markerType, id);
+    // Update buttons for this id in both drone and pilot sections
+    updateMarkerButtons('drone', id);
+    updateMarkerButtons('pilot', id);
   }
 }
 
@@ -1732,7 +1744,7 @@ function updateLockFollow() {
     else if (followLock.type === 'pilot' && pilotMarkers[followLock.id]) { map.setView(pilotMarkers[followLock.id].getLatLng(), map.getZoom()); }
   }
 }
-setInterval(updateLockFollow, 200);
+// setInterval(updateLockFollow, 200);
 
 document.getElementById("filterToggle").addEventListener("click", function() {
   const box = document.getElementById("filterBox");
