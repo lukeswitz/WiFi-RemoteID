@@ -12,6 +12,8 @@ from datetime import datetime
 from flask import Flask, request, jsonify, redirect, url_for, render_template_string, send_file
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
+import zmq
+from zmq.error import ZMQError
 
 # Ensure file paths are absolute
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -457,7 +459,7 @@ PORT_SELECTION_PAGE = '''
 </html>
 '''
 
-# Updated: The main mapping page now shows serial statuses for all selected USB devices.
+    # Updated: The main mapping page now shows serial statuses for all selected USB devices.
 HTML_PAGE = '''
 <!DOCTYPE html>
 <html lang="en">
@@ -515,28 +517,21 @@ HTML_PAGE = '''
       position: absolute;
       top: 10px;
       right: 10px;
-      width: 220px;
       background: rgba(0,0,0,0.8);
       padding: 8px;
       border: 1px solid lime;
       border-radius: 10px;
       color: lime;
       font-family: monospace;
+      max-width: 300px;
       max-height: 80vh;
-      overflow: hidden;
-      transition: max-height 0.3s ease;
       z-index: 1000;
-      transform: scale(0.85);
-      transform-origin: top right;
-    }
-    /* Collapsed filterBox shows only header, emoji, and toggle */
-    #filterBox.collapsed {
-      overflow: hidden;
-      width: auto;         /* shrink width to content */
-      padding: 4px;        /* minimal padding around header */
     }
     #filterBox.collapsed #filterContent {
       display: none;
+    }
+    #filterBox:not(.collapsed) #filterHeader h3 {
+      visibility: hidden;
     }
     #filterHeader {
       display: flex;
@@ -550,10 +545,6 @@ HTML_PAGE = '''
       display: block;
       width: 100%;
       color: #FF00FF;
-    }
-    /* Hide the header text when the box is expanded */
-    #filterBox:not(.collapsed) #filterHeader h3 {
-      display: none;
     }
     
     /* USB status box styling (bottom right) - now even with the map layer select */
@@ -685,20 +676,21 @@ HTML_PAGE = '''
     }
     /* Cyberpunk styling for filter headings */
     #filterContent > h3:nth-of-type(1) {
-      color: #BA55D3;         /* Active Drones in purple */
+      color: #FF00FF;         /* Active Drones in magenta */
       text-align: center;     /* center text */
       font-size: 1.1em;       /* slightly larger font */
     }
     #filterContent > h3:nth-of-type(2) {
-      color: #BA55D3;        /* more pastel purple */
+      color: #FF00FF;        /* more magenta */
       text-align: center;    /* center text */
       font-size: 1.1em;      /* slightly larger font */
     }
     /* Lime-green hacky dashes around filter headers */
     #filterContent > h3 {
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
+      display: block;
+      width: 100%;
+      text-align: center;
+      margin: 0.5em 0;
     }
     #filterContent > h3::before,
     #filterContent > h3::after {
@@ -787,6 +779,26 @@ HTML_PAGE = '''
     <div style="color:#FF00FF; font-family:monospace; font-size:0.75em; white-space:normal; line-height:1.2; margin-top:4px; text-align:center;">
       Polls detections every second instead of every 200 ms to reduce CPU/battery use and optimizes API for Node Mode.
     </div>
+    <div id="zmqSection" style="margin-top:8px; text-align:center;">
+      <div style="margin-top:8px; text-align:center;">
+        <label style="color:lime; font-family:monospace; margin-right:8px;">ZMQ Mode</label>
+        <label class="switch">
+          <input type="checkbox" id="zmqModeSwitch">
+          <span class="slider"></span>
+        </label>
+      </div>
+      <div style="margin-top:5px;">
+        <div style="display:flex; justify-content:center; align-items:center; margin-top:5px;">
+          <input type="text" id="zmqIP" placeholder="127.0.0.1" style="background-color:#222;color:#FF00FF;border:1px solid #FF00FF;width:55%;padding:4px;margin-right:5px;">
+          <span style="color:lime;">:</span>
+          <input type="text" id="zmqPort" placeholder="4224" style="background-color:#222;color:#FF00FF;border:1px solid #FF00FF;width:25%;padding:4px;margin-left:5px;">
+        </div>
+        <button id="applyZmqSettings" style="margin-top:5px;width:40%;padding:5px;border:1px solid lime;background:#333;color:lime;font-family:monospace;cursor:pointer;border-radius:5px;">Update ZMQ</button>
+      </div>
+      <div style="color:#FF00FF;font-family:monospace;font-size:0.75em;white-space:normal;line-height:1.2;margin-top:4px;text-align:center;">
+        Connect to ZMQ decoder via direct IP connection
+      </div>
+    </div>
   </div>
 </div>
 <div id="serialStatus">
@@ -824,6 +836,52 @@ document.addEventListener('DOMContentLoaded', () => {
   // Start polling based on current setting
   updateData();
   updateDataInterval = setInterval(updateData, mainSwitch && mainSwitch.checked ? 1000 : 200);
+
+  // ZMQ Settings
+  if (localStorage.getItem('zmqEnabled') === null) { localStorage.setItem('zmqEnabled','false'); }
+  const zmqSwitch = document.getElementById('zmqModeSwitch');
+    // Persist ZMQ toggle state on change so reload reflects current setting
+    zmqSwitch.onchange = () => { localStorage.setItem('zmqEnabled', zmqSwitch.checked); };
+  const zmqIP = document.getElementById('zmqIP');
+  const zmqPort = document.getElementById('zmqPort');
+  const applyZmqSettings = document.getElementById('applyZmqSettings');
+  if (zmqSwitch && zmqIP && zmqPort && applyZmqSettings) {
+    zmqSwitch.checked = (localStorage.getItem('zmqEnabled') === 'true');
+    const storedEndpoint = localStorage.getItem('zmqEndpoint') || 'tcp://127.0.0.1:4224';
+    try {
+      const url = new URL(storedEndpoint);
+      zmqIP.value = url.hostname;
+      zmqPort.value = url.port;
+    } catch (e) {
+      zmqIP.value = '127.0.0.1';
+      zmqPort.value = '4224';
+    }
+    applyZmqSettings.addEventListener('click', function() {
+      this.style.backgroundColor = 'purple';
+      setTimeout(() => { this.style.backgroundColor = '#333'; }, 300);
+      const endpoint = `tcp://${zmqIP.value.trim()}:${zmqPort.value.trim()}`;
+      localStorage.setItem('zmqEnabled', zmqSwitch.checked);
+      localStorage.setItem('zmqEndpoint', endpoint);
+      fetch('/api/zmq_settings', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({enabled: zmqSwitch.checked, endpoint: endpoint})
+      }).catch(err => console.error('Error applying ZMQ settings:', err));
+    });
+    fetch('/api/zmq_settings')
+      .then(res => res.json())
+      .then(data => {
+        zmqSwitch.checked = data.enabled;
+        try {
+          const url = new URL(data.endpoint);
+          zmqIP.value = url.hostname;
+          zmqPort.value = url.port;
+        } catch (e) {}
+        localStorage.setItem('zmqEnabled', data.enabled);
+        localStorage.setItem('zmqEndpoint', data.endpoint);
+      })
+      .catch(err => console.error('Error fetching ZMQ settings:', err));
+  }
 });
 // Optimize tile loading for smooth zoom and aggressive preloading
 L.Map.prototype.options.fadeAnimation = false;
@@ -1272,7 +1330,7 @@ map.on('zoomend', function() {
   // Scale circle and ring radii based on current zoom
   const zoomLevel = map.getZoom();
   const size = Math.max(12, Math.min(zoomLevel * 1.5, 24));
-  const circleRadius = size * 0.34;
+  const circleRadius = size * 0.45;
   Object.keys(droneMarkers).forEach(mac => {
     const color = get_color_for_mac(mac);
     droneMarkers[mac].setIcon(createIcon('🛸', color));
@@ -1382,7 +1440,7 @@ function showHistoricalDrone(mac, detection) {
     droneCircles[mac] = L.circleMarker([detection.drone_lat, detection.drone_long],
                                        {
                                          pane: 'droneCirclePane',
-                                         radius: size * 0.34,
+                                         radius: size * 0.45,
                                          color: color,
                                          fillColor: color,
                                          fillOpacity: 0.7
@@ -1548,7 +1606,7 @@ async function updateData() {
           const size = Math.max(12, Math.min(zoomLevel * 1.5, 24));
           droneCircles[mac] = L.circleMarker([droneLat, droneLng], {
             pane: 'droneCirclePane',
-            radius: size * 0.34,
+            radius: size * 0.45,
             color: color,
             fillColor: color,
             fillOpacity: 0.7
@@ -1560,7 +1618,7 @@ async function updateData() {
         if (dronePolylines[mac]) { map.removeLayer(dronePolylines[mac]); }
         dronePolylines[mac] = L.polyline(dronePathCoords[mac], {color: color}).addTo(map);
         if (currentTime - det.last_update <= 15) {
-          const dynamicRadius = getDynamicSize() * 0.34;
+          const dynamicRadius = getDynamicSize() * 0.45;
           const ringWeight = 3 * 0.8;  // 20% thinner
           const ringRadius = dynamicRadius + ringWeight / 2;  // sit just outside the main circle
           if (droneBroadcastRings[mac]) {
