@@ -9,7 +9,7 @@ import time
 import csv
 import os
 from datetime import datetime
-from flask import Flask, request, jsonify, redirect, url_for, render_template_string, send_file
+from flask import Flask, request, jsonify, redirect, url_for, render_template_string, send_file, make_response
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 import zmq
@@ -27,6 +27,10 @@ app = Flask(__name__)
 # ----------------------
 tracked_pairs = {}
 detection_history = []  # For CSV logging and KML generation
+
+zmq_contexts = {}
+zmq_sockets = {}
+zmq_threads = {}
 
 # Changed: Instead of one selected port, we allow up to three.
 SELECTED_PORTS = {}  # key will be 'port1', 'port2', 'port3'
@@ -406,30 +410,125 @@ PORT_SELECTION_PAGE = '''
 </head>
 <body>
   <pre class="ascii-art logo-art">{{ logo_ascii }}</pre>
-  <h1>Select Up to 3 USB Serial Ports</h1>
   <form method="POST" action="/select_ports">
-    <label>Port 1:</label><br>
-    <select id="port1" name="port1">
-      <option value="">--None--</option>
-      {% for port in ports %}
-        <option value="{{ port.device }}">{{ port.device }} - {{ port.description }}</option>
-      {% endfor %}
-    </select><br>
-    <label>Port 2:</label><br>
-    <select id="port2" name="port2">
-      <option value="">--None--</option>
-      {% for port in ports %}
-        <option value="{{ port.device }}">{{ port.device }} - {{ port.description }}</option>
-      {% endfor %}
-    </select><br>
-    <label>Port 3:</label><br>
-    <select id="port3" name="port3">
-      <option value="">--None--</option>
-      {% for port in ports %}
-        <option value="{{ port.device }}">{{ port.device }} - {{ port.description }}</option>
-      {% endfor %}
-    </select><br>
+    <div class="serial-section" style="border: 1px solid lime; border-radius: 10px; padding: 15px; margin-bottom: 20px;">
+      <h3 style="color:lime; text-align:center;">Select Port Connections</h3>
+      <div style="display: flex; align-items: center; margin: 10px 0;">
+        <label for="serialEnabled">Enable Serial:</label>
+        <label class="switch" style="margin-left: 10px;">
+          <input type="checkbox" id="serialEnabled" name="serialEnabled" checked>
+          <span class="slider"></span>
+        </label>
+      </div>
+      
+      <div id="serialPorts">
+        <div style="margin-bottom: 10px;">
+          <label>Port 1:</label>
+          <select id="port1" name="port1" style="background-color: #222; color: lime; border: none; padding: 5px; width: 100%;">
+            <option value="">--None--</option>
+            {% for port in ports %}
+              <option value="{{ port.device }}">{{ port.device }} - {{ port.description }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div style="margin-bottom: 10px;">
+          <label>Port 2:</label>
+          <select id="port2" name="port2" style="background-color: #222; color: lime; border: none; padding: 5px; width: 100%;">
+            <option value="">--None--</option>
+            {% for port in ports %}
+              <option value="{{ port.device }}">{{ port.device }} - {{ port.description }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div style="margin-bottom: 10px;">
+          <label>Port 3:</label>
+          <select id="port3" name="port3" style="background-color: #222; color: lime; border: none; padding: 5px; width: 100%;">
+            <option value="">--None--</option>
+            {% for port in ports %}
+              <option value="{{ port.device }}">{{ port.device }} - {{ port.description }}</option>
+            {% endfor %}
+          </select>
+        </div>
+      </div>
+      
+      <div style="color:lime; font-size:0.8em; text-align:center; margin-top:10px;">
+        Connect to up to three USB serial devices
+      </div>
     <button type="submit">Select Ports</button>
+    </div>
+
+    <div class="zmq-section" style="border: 1px solid #FF00FF; border-radius: 10px; padding: 15px; margin-top: 20px;">
+      <h3 style="color:#FF00FF; text-align:center;">Direct IP Connection</h3
+      
+      
+      <div style="text-align: center; margin: 20px 0;">
+        <form id="zmqOnlyForm" action="/select_ports" method="POST">
+          <input type="hidden" name="zmqEnabled" value="on">
+          <input type="hidden" name="port1" value="">
+          <input type="hidden" name="port2" value="">
+          <input type="hidden" name="port3" value="">
+          <!-- Will be populated via JS -->
+          <div id="zmqHiddenFields"></div>
+          
+          <button type="submit" style="
+            padding: 10px 20px;
+            border: 1px solid #FF00FF;
+            background: linear-gradient(to right, purple, #FF00FF);
+            color: white;
+            font-family: monospace;
+            cursor: pointer;
+            outline: none;
+            border-radius: 10px;
+            font-size: 1.0em;
+            font-weight: bold;">
+            Start with ZMQ Only
+          </button>
+        </form>
+      </div>
+    </div>
+    <script>
+      // Just before form submission, populate the hidden fields
+      document.getElementById('zmqOnlyForm').addEventListener('submit', function(e) {
+        // Get all IP and port values
+        const ipInputs = document.getElementsByName('zmqIP[]');
+        const portInputs = document.getElementsByName('zmqPort[]');
+        const hiddenContainer = document.getElementById('zmqHiddenFields');
+        
+        // Clear previous hidden inputs
+        hiddenContainer.innerHTML = '';
+        
+        // Add hidden inputs for all IP and port values
+        for (let i = 0; i < ipInputs.length; i++) {
+          const input = document.createElement('input');
+          input.type = 'hidden';
+          input.name = 'zmqIP[]';
+          input.value = ipInputs[i].value;
+          hiddenContainer.appendChild(input);
+        }
+        
+        for (let i = 0; i < portInputs.length; i++) {
+          const input = document.createElement('input');
+          input.type = 'hidden';
+          input.name = 'zmqPort[]';
+          input.value = portInputs[i].value;
+          hiddenContainer.appendChild(input);
+        }
+        
+        // Save to localStorage for persistence
+        let zmqEndpoints = [];
+        for (let i = 0; i < Math.min(ipInputs.length, portInputs.length); i++) {
+          if (ipInputs[i].value && portInputs[i].value) {
+            zmqEndpoints.push({
+              ip: ipInputs[i].value,
+              port: portInputs[i].value
+            });
+          }
+        }
+        localStorage.setItem('zmqEnabled', 'true');
+        localStorage.setItem('zmqEndpoints', JSON.stringify(zmqEndpoints));
+      });
+    </script>
+
   </form>
   <pre class="ascii-art">{{ bottom_ascii }}</pre>
   <script>
@@ -540,26 +639,37 @@ HTML_PAGE = '''
       font-family: monospace;
       max-width: 300px;
       max-height: 80vh;
+      overflow-y: auto;
       z-index: 1000;
+      width: 280px; /* Fixed width on larger screens */
     }
-    #filterBox.collapsed #filterContent {
-      display: none;
+  
+    @media screen and (max-width: 768px) {
+      #filterBox {
+        width: 90%;
+        max-width: none;
+        right: 5%;
+        left: 5%;
+        top: 5px;
+      }
+      #serialStatus {
+        width: 90%;
+        right: 5%;
+        left: 5%;
+        bottom: 5px;
+      }
+      
+      #layerControl {
+        bottom: 50px; /* Move up to avoid overlap with serial status */
+      }
     }
-    #filterBox:not(.collapsed) #filterHeader h3 {
-      visibility: hidden;
-    }
-    #filterHeader {
-      display: flex;
-      align-items: center;
-    }
-    #filterHeader h3 {
-      flex: 1;
-      text-align: center;
-      margin: 0;
-      font-size: 1em;
-      display: block;
-      width: 100%;
-      color: #FF00FF;
+    
+    @media screen and (min-width: 481px) and (max-width: 768px) {
+      #filterBox {
+        width: 70%;
+        right: 15%;
+        left: 15%;
+      }
     }
     
     /* USB status box styling (bottom right) - now even with the map layer select */
@@ -734,7 +844,7 @@ HTML_PAGE = '''
       font-family: monospace;
       cursor: pointer;
     }
-    #downloadButtons button:focus {
+    #downloadButtons with :focus {
       outline: none;
       caret-color: transparent;
     }
@@ -1897,23 +2007,167 @@ def select_ports_get():
 
 @app.route('/select_ports', methods=['POST'])
 def select_ports_post():
-    global SELECTED_PORTS
-    # Get up to 3 ports; if empty string, ignore.
-    port1 = request.form.get('port1')
-    port2 = request.form.get('port2')
-    port3 = request.form.get('port3')
-    if port1:
-        SELECTED_PORTS['port1'] = port1
-    if port2:
-        SELECTED_PORTS['port2'] = port2
-    if port3:
-        SELECTED_PORTS['port3'] = port3
-    # Start threads for each selected port.
-    for key, port in SELECTED_PORTS.items():
-        serial_connected_status[port] = False  # initialize status
-        start_serial_thread(port)
-    return redirect(url_for('index'))
+  global SELECTED_PORTS
+  
+  # Get up to 3 ports; if empty string, ignore.
+  port1 = request.form.get('port1')
+  port2 = request.form.get('port2')
+  port3 = request.form.get('port3')
+  
+  # Reset selected ports
+  SELECTED_PORTS = {}
+  
+  if port1:
+    SELECTED_PORTS['port1'] = port1
+  if port2:
+    SELECTED_PORTS['port2'] = port2
+  if port3:
+    SELECTED_PORTS['port3'] = port3
+    
+  # Start threads for each selected port
+  for key, port in SELECTED_PORTS.items():
+    serial_connected_status[port] = False  # initialize status
+    start_serial_thread(port)
+    
+  # Handle ZMQ connections
+  zmq_enabled = request.form.get('zmqEnabled') == 'on'
+  
+  # Store ZMQ settings in a global variable
+  app.config['ZMQ_ENABLED'] = zmq_enabled
+  
+  if zmq_enabled:
+    # Get all IP and port pairs
+    zmq_ips = request.form.getlist('zmqIP[]')
+    zmq_ports = request.form.getlist('zmqPort[]')
+    
+    # Create list of endpoints
+    zmq_endpoints = []
+    for i in range(min(len(zmq_ips), len(zmq_ports))):
+      if zmq_ips[i] and zmq_ports[i]:  # Only add if both IP and port are provided
+        zmq_endpoints.append({
+          'ip': zmq_ips[i],
+          'port': zmq_ports[i],
+          'endpoint': f"tcp://{zmq_ips[i]}:{zmq_ports[i]}"
+        })
+      
+    # Store endpoints in app config
+    app.config['ZMQ_ENDPOINTS'] = zmq_endpoints
+    
+    # Store in localStorage for persistence
+    # This will be sent to the client as a script in the response
+    localStorage_script = f"""
+    <script>
+      localStorage.setItem('zmqEnabled', 'true');
+      localStorage.setItem('zmqEndpoints', '{json.dumps(zmq_endpoints)}');
+    </script>
+    """
+    
+    # Start ZMQ connections
+    for endpoint in zmq_endpoints:
+      start_zmq_client(endpoint['endpoint'])
+  else:
+    # Clear ZMQ endpoints
+    app.config['ZMQ_ENDPOINTS'] = []
+    localStorage_script = """
+    <script>
+      localStorage.setItem('zmqEnabled', 'false');
+    </script>
+    """
+    
+  # Redirect to the main page
+  response = make_response(redirect(url_for('index')))
+  response.set_cookie('message', localStorage_script)
+  return response
 
+
+def zmq_message_handler(endpoint):
+  """Handle ZMQ messages from a specific endpoint"""
+  socket = zmq_sockets.get(endpoint)
+  
+  while app.config.get('ZMQ_ENABLED', False) and endpoint in zmq_sockets:
+    try:
+      if socket is None:
+        time.sleep(1)
+        continue
+      
+      message = socket.recv_string(flags=zmq.NOBLOCK)
+      try:
+        detection = json.loads(message)
+        # Process the ZMQ message as a detection
+        update_detection(detection)
+      except json.JSONDecodeError:
+        print(f"Invalid JSON from ZMQ endpoint {endpoint}: {message[:100]}")
+    except zmq.Again:
+      # No message available, continue
+      time.sleep(0.1)
+    except Exception as e:
+      print(f"ZMQ error from endpoint {endpoint}: {e}")
+      time.sleep(1)
+
+def start_zmq_client(endpoint):
+  """Start a ZMQ client for a specific endpoint"""
+  global zmq_contexts, zmq_sockets, zmq_threads
+  
+  # Clean up any existing connection for this endpoint
+  if endpoint in zmq_sockets:
+    stop_zmq_client(endpoint)
+    
+  try:
+    context = zmq.Context()
+    socket = context.socket(zmq.SUB)
+    socket.setsockopt_string(zmq.SUBSCRIBE, "")
+    socket.connect(endpoint)
+    print(f"Connected to ZMQ endpoint: {endpoint}")
+    
+    zmq_contexts[endpoint] = context
+    zmq_sockets[endpoint] = socket
+    
+    thread = threading.Thread(target=zmq_message_handler, args=(endpoint,), daemon=True)
+    thread.start()
+    zmq_threads[endpoint] = thread
+    
+    return True
+  except Exception as e:
+    print(f"Failed to start ZMQ client for {endpoint}: {e}")
+    if endpoint in zmq_sockets and zmq_sockets[endpoint]:
+      zmq_sockets[endpoint].close()
+      del zmq_sockets[endpoint]
+    if endpoint in zmq_contexts and zmq_contexts[endpoint]:
+      zmq_contexts[endpoint].term()
+      del zmq_contexts[endpoint]
+    return False
+  
+def stop_zmq_client(endpoint):
+  """Stop a ZMQ client for a specific endpoint"""
+  global zmq_contexts, zmq_sockets, zmq_threads
+  
+  if endpoint in zmq_sockets and zmq_sockets[endpoint]:
+    try:
+      zmq_sockets[endpoint].close()
+    except:
+      pass
+    del zmq_sockets[endpoint]
+    
+  if endpoint in zmq_contexts and zmq_contexts[endpoint]:
+    try:
+      zmq_contexts[endpoint].term()
+    except:
+      pass
+    del zmq_contexts[endpoint]
+    
+  if endpoint in zmq_threads and zmq_threads[endpoint] and zmq_threads[endpoint].is_alive():
+    zmq_threads[endpoint].join(timeout=2)
+    if zmq_threads[endpoint].is_alive():
+      print(f"Warning: ZMQ thread for {endpoint} did not exit cleanly")
+    del zmq_threads[endpoint]
+    
+def stop_all_zmq_clients():
+  """Stop all ZMQ clients"""
+  global zmq_sockets
+  
+  endpoints = list(zmq_sockets.keys())
+  for endpoint in endpoints:
+    stop_zmq_client(endpoint)
 
 # ----------------------
 # ASCII art blocks
@@ -1956,8 +2210,8 @@ ________                                  _____
 
 @app.route('/')
 def index():
-    if (len(SELECTED_PORTS) == 0):
-        return redirect(url_for('select_ports_get'))
+    if len(SELECTED_PORTS) == 0 and not app.config.get('ZMQ_ENABLED', False):
+      return redirect(url_for('select_ports_get'))
     return HTML_PAGE
 
 @app.route('/api/detections', methods=['GET'])
@@ -2160,5 +2414,11 @@ def download_aliases():
     save_aliases()
     return send_file(ALIASES_FILE, as_attachment=True)
 
+@app.teardown_appcontext
+def cleanup(exception=None):
+  # Clean up ZMQ connections
+  stop_all_zmq_clients()
+
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)
+  
