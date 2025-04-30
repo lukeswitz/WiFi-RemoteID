@@ -201,11 +201,13 @@ def update_detection(detection):
 
     remote_id = detection.get("basic_id")
     if mac and remote_id:
-        cached = FAA_CACHE.get((mac, remote_id))
+        key = (mac, remote_id)
+        cached = FAA_CACHE.get(key)
         if cached:
             detection["faa_data"] = cached
-    if mac in tracked_pairs and "faa_data" in tracked_pairs[mac]:
+    elif mac in tracked_pairs and "faa_data" in tracked_pairs[mac]:
         detection["faa_data"] = tracked_pairs[mac]["faa_data"]
+
     tracked_pairs[mac] = detection
     detection_history.append(detection.copy())
     print("Updated tracked_pairs:", tracked_pairs)
@@ -640,8 +642,11 @@ HTML_PAGE = '''
       border: 1px solid #FF00FF;
       padding: 2px;
       font-size: 0.8em;
-      caret-color: transparent;
+      caret-color: #FF00FF;
       outline: none;
+    }
+    .leaflet-popup-content-wrapper input:not(#aliasInput) {
+      caret-color: transparent;
     }
     /* Popup button and input sizing */
     .leaflet-popup-content-wrapper button {
@@ -1241,6 +1246,8 @@ async function saveAlias(mac) {
         aliasSpan.style.backgroundColor = 'purple';
         setTimeout(() => { aliasSpan.style.backgroundColor = prevBg; }, 300);
       }
+      // Ensure the alias list updates immediately
+      updateComboList(window.tracked_pairs);
     }
   } catch (error) { console.error("Error saving alias:", error); }
 }
