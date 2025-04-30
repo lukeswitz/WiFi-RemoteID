@@ -200,13 +200,22 @@ def update_detection(detection):
     detection["last_update"] = time.time()
 
     remote_id = detection.get("basic_id")
-    if mac and remote_id:
-        key = (mac, remote_id)
-        cached = FAA_CACHE.get(key)
-        if cached:
-            detection["faa_data"] = cached
-    elif mac in tracked_pairs and "faa_data" in tracked_pairs[mac]:
-        detection["faa_data"] = tracked_pairs[mac]["faa_data"]
+    # Try exact cache lookup by (mac, remote_id), then fallback to any cached data for this mac, then to previous tracked_pairs entry
+    if mac:
+        # Exact match if basic_id provided
+        if remote_id:
+            key = (mac, remote_id)
+            if key in FAA_CACHE:
+                detection["faa_data"] = FAA_CACHE[key]
+        # Fallback: any cached FAA data for this mac
+        if "faa_data" not in detection:
+            for (c_mac, _), faa_data in FAA_CACHE.items():
+                if c_mac == mac:
+                    detection["faa_data"] = faa_data
+                    break
+        # Fallback: last known FAA data in tracked_pairs
+        if "faa_data" not in detection and mac in tracked_pairs and "faa_data" in tracked_pairs[mac]:
+            detection["faa_data"] = tracked_pairs[mac]["faa_data"]
 
     tracked_pairs[mac] = detection
     detection_history.append(detection.copy())
