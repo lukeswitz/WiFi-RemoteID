@@ -2322,74 +2322,40 @@ def select_ports_get():
 def select_ports_post():
   global SELECTED_PORTS
   
-  # Get up to 3 ports; if empty string, ignore.
-  port1 = request.form.get('port1')
-  port2 = request.form.get('port2')
-  port3 = request.form.get('port3')
+  # Check if this is a ZMQ-only submission
+  zmq_enabled = request.form.get('zmqEnabled') == 'on'
   
   # Reset selected ports
   SELECTED_PORTS = {}
   
-  if port1:
-    SELECTED_PORTS['port1'] = port1
-  if port2:
-    SELECTED_PORTS['port2'] = port2
-  if port3:
-    SELECTED_PORTS['port3'] = port3
+  # Only process serial ports if this isn't a ZMQ-only submission
+  if not zmq_enabled:
+    # Get up to 3 ports; if empty string, ignore.
+    port1 = request.form.get('port1')
+    port2 = request.form.get('port2')
+    port3 = request.form.get('port3')
     
-  # Start threads for each selected port
-  for key, port in SELECTED_PORTS.items():
-    serial_connected_status[port] = False  # initialize status
-    start_serial_thread(port)
-    
-  # Handle ZMQ connections
-  zmq_enabled = request.form.get('zmqEnabled') == 'on'
-  
+    if port1:
+      SELECTED_PORTS['port1'] = port1
+    if port2:
+      SELECTED_PORTS['port2'] = port2
+    if port3:
+      SELECTED_PORTS['port3'] = port3
+      
+    # Start threads for each selected port
+    for key, port in SELECTED_PORTS.items():
+      serial_connected_status[port] = False  # initialize status
+      start_serial_thread(port)
+      
   # Store ZMQ settings in a global variable
   app.config['ZMQ_ENABLED'] = zmq_enabled
   
-  if zmq_enabled:
-    # Get all IP and port pairs
-    zmq_ips = request.form.getlist('zmqIP[]')
-    zmq_ports = request.form.getlist('zmqPort[]')
-    
-    # Create list of endpoints
-    zmq_endpoints = []
-    for i in range(min(len(zmq_ips), len(zmq_ports))):
-      if zmq_ips[i] and zmq_ports[i]:  # Only add if both IP and port are provided
-        zmq_endpoints.append({
-          'ip': zmq_ips[i],
-          'port': zmq_ports[i],
-          'endpoint': f"tcp://{zmq_ips[i]}:{zmq_ports[i]}"
-        })
-      
-    # Store endpoints in app config
-    app.config['ZMQ_ENDPOINTS'] = zmq_endpoints
-    
-    # Store in localStorage for persistence
-    # This will be sent to the client as a script in the response
-    localStorage_script = f"""
-    <script>
-      localStorage.setItem('zmqEnabled', 'true');
-      localStorage.setItem('zmqEndpoints', '{json.dumps(zmq_endpoints)}');
-    </script>
-    """
-    
-    # Start ZMQ connections
-    for endpoint in zmq_endpoints:
-      start_zmq_client(endpoint['endpoint'])
-  else:
-    # Clear ZMQ endpoints
-    app.config['ZMQ_ENDPOINTS'] = []
-    localStorage_script = """
-    <script>
-      localStorage.setItem('zmqEnabled', 'false');
-    </script>
-    """
-    
+  # Handle ZMQ endpoints from the form
+  zmq_ips = request.form.getlist('zmqIP[]')
+  zmq_ports = request.form.getlist('zmqPort[]')
+  
   # Redirect to the main page
   response = make_response(redirect(url_for('index')))
-  response.set_cookie('message', localStorage_script)
   return response
 
 
