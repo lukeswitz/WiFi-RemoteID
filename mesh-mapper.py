@@ -684,23 +684,29 @@ HTML_PAGE = '''
       }
     }
     
-    /* USB status box styling (bottom right) - now even with the map layer select */
+    /* USB status box styling - significantly repositioned to avoid overlap */
     #serialStatus {
-      position: absolute;
+      position: fixed;
       bottom: 10px;
       right: 10px;
-      background: rgba(0,0,0,0.8);
-      padding: 3px; /* reduced from 5px */
-      border: 0.7px solid lime; /* reduced border thickness */
-      border-radius: 7px; /* reduced from 10px */
+      background: rgba(0,0,0,0.9);
+      padding: 5px;
+      border: 1px solid #FF00FF;
+      border-radius: 7px;
       color: lime;
       font-family: monospace;
-      font-size: 0.7em; /* scale font by 70% */
+      font-size: 0.8em;
       z-index: 1000;
     }
+    
     #serialStatus div { margin-bottom: 5px; }
     /* Remove extra bottom padding from the last USB item */
     #serialStatus div:last-child { margin-bottom: 0; }
+    
+    /* Add padding to inactive drones container to avoid overlap with status */
+    #inactivePlaceholder {
+      margin-bottom: 10px;
+    }
     
     .usb-name { color: #FF00FF; } /* Neon pink for device names */
     .drone-item {
@@ -899,6 +905,55 @@ HTML_PAGE = '''
       border-radius: 50%;
       cursor: pointer;
     }
+
+    #settingsButton {
+      position: relative;
+      display: block;
+      margin: 10px auto;
+      padding: 10px 15px;
+      background: rgba(0,0,0,0.8);
+      border: 1px solid lime;
+      border-radius: 7px;
+      color: lime;
+      font-family: monospace;
+      text-align: center;
+      cursor: pointer;
+      width: fit-content;
+    }
+    #settingsButton .gear-icon {
+      font-size: 15px;
+      margin-right: 5px;
+    }
+    #settingsModal {
+      display: none;
+      position: fixed;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      background: rgba(0,0,0,0.95);
+      border: 2px solid lime;
+      border-radius: 10px;
+      z-index: 2000;
+      width: 300px;
+      max-height: 80vh;
+      overflow-y: auto;
+      padding: 15px;
+    }
+    #settingsModal h3 {
+      color: #FF00FF;
+      text-align: center;
+      margin-top: 0;
+    }
+    #closeSettings {
+      position: absolute;
+      top: 10px;
+      right: 10px;
+      color: lime;
+      cursor: pointer;
+      font-size: 18px;
+    }
+
+
     /* Firefox */
     #staleoutSlider::-moz-range-track {
       width: 100%;
@@ -1029,54 +1084,72 @@ HTML_PAGE = '''
     <div id="activePlaceholder" class="placeholder"></div>
     <h3>Inactive Drones</h3>
     <div id="inactivePlaceholder" class="placeholder"></div>
-    <!-- Downloads Section -->
-    <div id="downloadSection">
-      <h4 class="downloadHeader">Download Logs</h4>
-      <div id="downloadButtons">
-        <button id="downloadCsv">CSV</button>
-        <button id="downloadKml">KML</button>
-        <button id="downloadAliases">Aliases</button>
-      </div>
+    <!-- Settings Dropdown -->
+    <!-- Settings button -->
+    <div id="settingsButton">
+      <span class="gear-icon">⚙️</span>
+      <span>Settings</span>
     </div>
-    <div style="margin-top:8px; display:flex; align-items:center; justify-content:center; height:20px;">
-      <label style="color:lime; font-family:monospace; margin-right:8px;">Node Mode</label>
-      <label class="switch">
-        <input type="checkbox" id="nodeModeMainSwitch">
-        <span class="slider"></span>
-      </label>
-    </div>
-    <div style="color:#FF00FF; font-family:monospace; font-size:0.75em; white-space:normal; line-height:1.2; margin-top:4px; text-align:center;">
-      Polls detections every second instead of every 200 ms to reduce CPU/battery use and optimizes API for Node Mode.
-    </div>
-    <div id="zmqSection" style="margin-top:8px; text-align:center;">
-      <div style="margin-top:8px; display:flex; align-items:center; justify-content:center; height:20px;">
-        <label style="color:lime; font-family:monospace; margin-right:8px;">ZMQ Mode</label>
-        <label class="switch">
-          <input type="checkbox" id="zmqModeSwitch">
-          <span class="slider"></span>
-        </label>
-      </div>
-      <div style="margin-top:5px;">
-        <div style="display:flex; justify-content:center; align-items:center; margin-top:5px;">
-          <input type="text" id="zmqIP" placeholder="127.0.0.1" style="background-color:#222;color:#FF00FF;border:1px solid #FF00FF;width:55%;padding:4px;margin-right:5px;">
-          <span style="color:lime;">:</span>
-          <input type="text" id="zmqPort" placeholder="4224" style="background-color:#222;color:#FF00FF;border:1px solid #FF00FF;width:25%;padding:4px;margin-left:5px;">
+    
+    <!-- Settings modal dialog -->
+    <div id="settingsModal">
+      <span id="closeSettings">×</span>
+      <h3>Settings</h3>
+      
+      <!-- Downloads Section -->
+      <div id="downloadSection" style="margin-bottom: 15px;">
+        <h4 class="downloadHeader">Download Logs</h4>
+        <div id="downloadButtons">
+          <button id="downloadCsv">CSV</button>
+          <button id="downloadKml">KML</button>
+          <button id="downloadAliases">Aliases</button>
         </div>
-        <button id="applyZmqSettings" style="margin-top:5px;width:40%;padding:5px;border:1px solid lime;background:#333;color:lime;font-family:monospace;cursor:pointer;border-radius:5px;">Update ZMQ</button>
       </div>
-      <div style="color:#FF00FF;font-family:monospace;font-size:0.75em;white-space:normal;line-height:1.2;margin-top:4px;text-align:center;">
-        Connect to ZMQ decoder via direct IP connection
+      
+      <!-- Node Mode Section -->
+      <div style="margin: 15px 0; border-top: 1px solid #333; padding-top: 15px;">
+        <div style="display:flex; align-items:center; justify-content:center; height:20px;">
+          <label style="color:lime; font-family:monospace; margin-right:8px;">Node Mode</label>
+          <label class="switch">
+            <input type="checkbox" id="nodeModeMainSwitch">
+            <span class="slider"></span>
+          </label>
+        </div>
+        <div style="color:#FF00FF; font-family:monospace; font-size:0.75em; white-space:normal; line-height:1.2; margin-top:8px; text-align:center;">
+          Polls detections every second instead of every 200 ms to reduce CPU/battery use and optimizes API for Node Mode.
+        </div>
+      </div>
+      
+      <!-- ZMQ Section -->
+      <div style="margin: 15px 0; border-top: 1px solid #333; padding-top: 15px;">
+        <div style="display:flex; align-items:center; justify-content:center; height:20px;">
+          <label style="color:lime; font-family:monospace; margin-right:8px;">ZMQ Mode</label>
+          <label class="switch">
+            <input type="checkbox" id="zmqModeSwitch">
+            <span class="slider"></span>
+          </label>
+        </div>
+        <div style="margin-top:10px;">
+          <div style="display:flex; justify-content:center; align-items:center;">
+            <input type="text" id="zmqIP" placeholder="127.0.0.1" style="background-color:#222;color:#FF00FF;border:1px solid #FF00FF;width:55%;padding:4px;margin-right:5px;">
+            <span style="color:lime;">:</span>
+            <input type="text" id="zmqPort" placeholder="4224" style="background-color:#222;color:#FF00FF;border:1px solid #FF00FF;width:25%;padding:4px;margin-left:5px;">
+          </div>
+          <button id="applyZmqSettings" style="margin-top:10px;width:40%;padding:5px;border:1px solid lime;background:#333;color:lime;font-family:monospace;cursor:pointer;border-radius:5px;">Update ZMQ</button>
+        </div>
+        <div style="color:#FF00FF;font-family:monospace;font-size:0.75em;white-space:normal;line-height:1.2;margin-top:8px;text-align:center;">
+          Connect to ZMQ decoder via direct IP connection
+        </div>
+      </div>
+      
+      <!-- Staleout Slider -->
+      <div style="margin: 15px 0; border-top: 1px solid #333; padding-top: 15px;">
+        <label style="color:lime; font-family:monospace; margin-bottom:8px; display:block; text-align:center;">Staleout Time</label>
+        <input type="range" id="staleoutSlider" min="1" max="5" step="1" value="1" 
+                style="width:80%; border:1px solid lime; margin:0 auto; display:block;">
+        <div id="staleoutValue" style="color:lime; font-family:monospace; text-align:center; margin-top:8px;">1 min</div>
       </div>
     </div>
-    <!-- Staleout Slider -->
-    <div style="margin-top:8px; text-align:center;">
-      <label style="color:lime; font-family:monospace; margin-bottom:4px; display:block;">Staleout Time</label>
-      <input type="range" id="staleoutSlider" min="1" max="5" step="1" value="1" 
-             style="width:80%; border:1px solid lime; margin-bottom:4px;">
-      <div id="staleoutValue" style="color:lime; font-family:monospace;">1 min</div>
-    </div>
-  </div>
-</div>
 <div id="serialStatus">
   <!-- USB port statuses will be injected here -->
 </div>
@@ -1089,6 +1162,34 @@ HTML_PAGE = '''
       original.call(this, el, rounded);
     };
   })();
+// Settings change listener
+document.addEventListener('DOMContentLoaded', function() {
+  const settingsHeader = document.getElementById('settingsHeader');
+  const settingsContent = document.getElementById('settingsContent');
+  
+  if (settingsHeader && settingsContent) {
+    settingsHeader.addEventListener('click', function() {
+      const isHidden = settingsContent.style.display === 'none';
+      settingsContent.style.display = isHidden ? 'block' : 'none';
+    });
+  }
+});
+// --- Settings Model Handler ---
+document.getElementById('settingsButton').addEventListener('click', function() {
+  document.getElementById('settingsModal').style.display = 'block';
+});
+
+document.getElementById('closeSettings').addEventListener('click', function() {
+  document.getElementById('settingsModal').style.display = 'none';
+});
+
+// Close modal if clicked outside
+window.addEventListener('click', function(event) {
+  const modal = document.getElementById('settingsModal');
+  if (event.target === modal) {
+    modal.style.display = 'none';
+  }
+});
 // --- Node Mode Main Switch & Polling Interval Sync ---
 document.addEventListener('DOMContentLoaded', () => {
   // restore follow-lock on reload
@@ -2037,19 +2138,37 @@ function getDynamicSize() {
   return base * 1.15;
 }
 
-// Updated function: now updates all selected USB port statuses.
+// Updates selected USB port statuses and ZMQ status
 async function updateSerialStatus() {
   try {
-    const response = await fetch('/api/serial_status');
-    const data = await response.json();
+    // Get serial status
+    const serialResponse = await fetch('/api/serial_status');
+    const serialData = await serialResponse.json();
     const statusDiv = document.getElementById('serialStatus');
     statusDiv.innerHTML = "";
-    if (data.statuses) {
-      for (const port in data.statuses) {
+    
+    // Add serial port statuses
+    if (serialData.statuses) {
+      for (const port in serialData.statuses) {
         const div = document.createElement("div");
         // Device name in neon pink and status color accordingly.
         div.innerHTML = '<span class="usb-name">' + port + '</span>: ' +
-          (data.statuses[port] ? '<span style="color: lime;">Connected</span>' : '<span style="color: red;">Disconnected</span>');
+          (serialData.statuses[port] ? '<span style="color: lime;">Connected</span>' : 
+                                      '<span style="color: red;">Disconnected</span>');
+        statusDiv.appendChild(div);
+      }
+    }
+    
+    // Add ZMQ status if enabled
+    const zmqSwitch = document.getElementById('zmqModeSwitch');
+    if (zmqSwitch && zmqSwitch.checked) {
+      const zmqIP = document.getElementById('zmqIP');
+      const zmqPort = document.getElementById('zmqPort');
+      if (zmqIP && zmqPort && zmqIP.value && zmqPort.value) {
+        const div = document.createElement("div");
+        div.innerHTML = '<span class="usb-name" style="color: #FF00FF;">ZMQ</span>: ' +
+          '<span style="color: lime;">Connected</span> ' + 
+          zmqIP.value + ':' + zmqPort.value;
         statusDiv.appendChild(div);
       }
     }
