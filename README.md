@@ -1,3 +1,6 @@
+> [!IMPORTANT]
+> ZMQ work now under active development in the [main repo](https://github.com/colonelpanichacks/WiFi-RemoteID) dev branches. 
+
 # Drone Remote ID to Meshtastic with Mesh-Mapper API 📡
 
 ## About
