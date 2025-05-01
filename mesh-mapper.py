@@ -1116,7 +1116,7 @@ HTML_PAGE = '''
           </label>
         </div>
         <div style="color:#FF00FF; font-family:monospace; font-size:0.75em; white-space:normal; line-height:1.2; margin-top:8px; text-align:center;">
-          Polls detections every second instead of every 200 ms to reduce CPU/battery use and optimizes API for Node Mode.
+          Poll interval of 1 second instead of 200ms. Lower CPU use, more reliable for node-mode.
         </div>
       </div>
       
@@ -1129,16 +1129,16 @@ HTML_PAGE = '''
             <span class="slider"></span>
           </label>
         </div>
+      <div style="color:#FF00FF;font-family:monospace;font-size:0.75em;white-space:normal;line-height:1.2;margin-top:8px;text-align:center;">
+        Connect to ZMQ decoder via direct IP connection
+      </div>
         <div style="margin-top:10px;">
           <div style="display:flex; justify-content:center; align-items:center;">
             <input type="text" id="zmqIP" placeholder="127.0.0.1" style="background-color:#222;color:#FF00FF;border:1px solid #FF00FF;width:55%;padding:4px;margin-right:5px;">
             <span style="color:lime;">:</span>
             <input type="text" id="zmqPort" placeholder="4224" style="background-color:#222;color:#FF00FF;border:1px solid #FF00FF;width:25%;padding:4px;margin-left:5px;">
           </div>
-          <button id="applyZmqSettings" style="margin-top:10px;width:40%;padding:5px;border:1px solid lime;background:#333;color:lime;font-family:monospace;cursor:pointer;border-radius:5px;">Update ZMQ</button>
-        </div>
-        <div style="color:#FF00FF;font-family:monospace;font-size:0.75em;white-space:normal;line-height:1.2;margin-top:8px;text-align:center;">
-          Connect to ZMQ decoder via direct IP connection
+          <button id="applyZmqSettings" style="margin-top:10px;width:40%;padding:5px;border:1px solid lime;background:#333;color:lime;font-family:monospace;cursor:pointer;border-radius:5px;display:block;margin-left:auto;margin-right:auto;">Update ZMQ</button>
         </div>
       </div>
       
