@@ -2320,33 +2320,51 @@ def select_ports_get():
 
 @app.route('/select_ports', methods=['POST'])
 def select_ports_post():
-  global SELECTED_PORTS
+  global SELECTED_PORTS, serial_connected_status
   
   # Check if this is a ZMQ-only submission
   zmq_enabled = request.form.get('zmqEnabled') == 'on'
   
-  # Reset selected ports
+  # Close any existing serial connections before changing modes
+  with serial_objs_lock:
+    for port, ser in list(serial_objs.items()):
+      try:
+        if ser and ser.is_open:
+          ser.close()
+      except Exception:
+        pass
+      serial_objs.pop(port, None)
+      
+  # Reset selected ports and connection status
+  old_ports = set(SELECTED_PORTS.values())
   SELECTED_PORTS = {}
   
-  # Only process serial ports if this isn't a ZMQ-only submission
-  if not zmq_enabled:
-    # Get up to 3 ports; if empty string, ignore.
-    port1 = request.form.get('port1')
-    port2 = request.form.get('port2')
-    port3 = request.form.get('port3')
+  # Process serial ports even if ZMQ is enabled
+  port1 = request.form.get('port1')
+  port2 = request.form.get('port2')
+  port3 = request.form.get('port3')
+  
+  # Initialize serial connection statuses
+  # Clear out old ports that are no longer selected
+  for port in list(serial_connected_status.keys()):
+    if port not in [port1, port2, port3]:
+      serial_connected_status.pop(port, None)
+      
+  # Add new ports to tracking
+  if port1:
+    SELECTED_PORTS['port1'] = port1
+    serial_connected_status[port1] = False
+  if port2:
+    SELECTED_PORTS['port2'] = port2
+    serial_connected_status[port2] = False
+  if port3:
+    SELECTED_PORTS['port3'] = port3
+    serial_connected_status[port3] = False
     
-    if port1:
-      SELECTED_PORTS['port1'] = port1
-    if port2:
-      SELECTED_PORTS['port2'] = port2
-    if port3:
-      SELECTED_PORTS['port3'] = port3
-      
-    # Start threads for each selected port
-    for key, port in SELECTED_PORTS.items():
-      serial_connected_status[port] = False  # initialize status
-      start_serial_thread(port)
-      
+  # Start threads for each selected port
+  for key, port in SELECTED_PORTS.items():
+    start_serial_thread(port)
+    
   # Store ZMQ settings in a global variable
   app.config['ZMQ_ENABLED'] = zmq_enabled
   
