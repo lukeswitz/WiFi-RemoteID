@@ -638,20 +638,9 @@ HTML_PAGE = '''
           z-index: 1000;
         }
         @media (max-width: 600px) {
-          /* Full-width filter panel on mobile without wrapping headings */
           #filterBox {
-            position: absolute;
-            top: 10px;
-            left: 10vw;
-            width: 80vw !important;
-            max-width: 80vw !important;
-            max-height: 100vh !important;
-            overflow: visible !important;
-            padding: 8px 4px;
-          }
-          /* Prevent filter headings from wrapping */
-          #filterBox h3 {
-            white-space: nowrap;
+            width: 37.5vw;
+            max-width: 90vw;
           }
         }
         /* Auto-size inputs inside filterBox */
