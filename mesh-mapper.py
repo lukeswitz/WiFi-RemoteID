@@ -1061,6 +1061,13 @@ HTML_PAGE = '''
     <div id="activePlaceholder" class="placeholder"></div>
     <h3>Inactive Drones</h3>
     <div id="inactivePlaceholder" class="placeholder"></div>
+    <!-- Staleout Slider -->
+    <div style="margin-top:8px; display:flex; flex-direction:column; align-items:stretch; width:100%; box-sizing:border-box;">
+      <label style="color:lime; font-family:monospace; margin-bottom:4px; display:block; width:100%; text-align:center;">Staleout Time</label>
+      <input type="range" id="staleoutSlider" min="1" max="5" step="1" value="1" 
+             style="width:100%; border:1px solid lime; margin-bottom:4px;">
+      <div id="staleoutValue" style="color:lime; font-family:monospace; width:100%; text-align:center;">1 min</div>
+    </div>
     <!-- Downloads Section -->
     <div id="downloadSection">
       <h4 class="downloadHeader">Download Logs</h4>
@@ -1130,13 +1137,6 @@ HTML_PAGE = '''
         <button id="applyTakSettings" style="margin-top:5px;padding:5px;border:1px solid lime;background:#333;color:lime;font-family:monospace;cursor:pointer;border-radius:5px;">Update TAK</button>
         <div style="height:8px;"></div>
       </div>
-    </div>
-    <!-- Staleout Slider -->
-    <div style="margin-top:8px; display:flex; flex-direction:column; align-items:stretch; width:100%; box-sizing:border-box;">
-      <label style="color:lime; font-family:monospace; margin-bottom:4px; display:block; width:100%; text-align:center;">Staleout Time</label>
-      <input type="range" id="staleoutSlider" min="1" max="5" step="1" value="1" 
-             style="width:100%; border:1px solid lime; margin-bottom:4px;">
-      <div id="staleoutValue" style="color:lime; font-family:monospace; width:100%; text-align:center;">1 min</div>
     </div>
   </div>
 </div>
@@ -2086,6 +2086,7 @@ async function updateData() {
         if (droneBroadcastRings[mac]) { map.removeLayer(droneBroadcastRings[mac]); delete droneBroadcastRings[mac]; }
         delete dronePathCoords[mac];
         delete pilotPathCoords[mac];
+        
         continue;
       }
       const droneLat = det.drone_lat, droneLng = det.drone_long;
