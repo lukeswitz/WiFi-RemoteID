@@ -15,6 +15,10 @@ from urllib3.util.retry import Retry
 import zmq
 from zmq.error import ZMQError
 
+# ZMQ & TAK Settings Persistence
+ZMQ_SETTINGS = {'enabled': False, 'endpoint': 'tcp://127.0.0.1:4224'}
+TAK_SETTINGS = {'enabled': False, 'endpoint': '127.0.0.1:8087', 'skipVerify': False}
+
 # Ensure file paths are absolute
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -199,6 +203,9 @@ def update_detection(detection):
     detection["pilot_long"] = detection.get("pilot_long", 0)
     detection["last_update"] = time.time()
 
+    # Preserve previous basic_id if new detection lacks one
+    if not detection.get("basic_id") and mac in tracked_pairs and tracked_pairs[mac].get("basic_id"):
+        detection["basic_id"] = tracked_pairs[mac]["basic_id"]
     remote_id = detection.get("basic_id")
     # Try exact cache lookup by (mac, remote_id), then fallback to any cached data for this mac, then to previous tracked_pairs entry
     if mac:
@@ -216,6 +223,9 @@ def update_detection(detection):
         # Fallback: last known FAA data in tracked_pairs
         if "faa_data" not in detection and mac in tracked_pairs and "faa_data" in tracked_pairs[mac]:
             detection["faa_data"] = tracked_pairs[mac]["faa_data"]
+        # Always cache FAA data by MAC and current basic_id for fallback
+        if "faa_data" in detection:
+            write_to_faa_cache(mac, detection.get("basic_id", ""), detection["faa_data"])
 
     tracked_pairs[mac] = detection
     detection_history.append(detection.copy())
@@ -314,6 +324,12 @@ def api_query_faa():
     session = create_retry_session()
     refresh_cookie(session)
     faa_result = query_remote_id(session, remote_id)
+    # Fallback: if FAA API query failed or returned no records, try cached FAA data by MAC
+    if not faa_result or not faa_result.get("data", {}).get("items"):
+        for (c_mac, _), cached_data in FAA_CACHE.items():
+            if c_mac == mac:
+                faa_result = cached_data
+                break
     if faa_result is None:
         return jsonify({"status": "error", "message": "FAA query failed"}), 500
     if mac in tracked_pairs:
@@ -336,6 +352,68 @@ def api_query_faa():
         print("Error writing to FAA log CSV:", e)
     generate_kml()
     return jsonify({"status": "ok", "faa_data": faa_result})
+
+# ----------------------
+# FAA Data GET API Endpoint (by MAC or basic_id)
+# ----------------------
+@app.route('/api/faa/<identifier>', methods=['GET'])
+def api_get_faa(identifier):
+    """
+    Retrieve cached FAA data by MAC address or by basic_id (remote ID).
+    """
+    # First try lookup by MAC
+    if identifier in tracked_pairs and 'faa_data' in tracked_pairs[identifier]:
+        return jsonify({'status': 'ok', 'faa_data': tracked_pairs[identifier]['faa_data']})
+    # Then try lookup by basic_id
+    for mac, det in tracked_pairs.items():
+        if det.get('basic_id') == identifier and 'faa_data' in det:
+            return jsonify({'status': 'ok', 'faa_data': det['faa_data']})
+    # Fallback: search cached FAA data by remote_id first, then by MAC
+    for (c_mac, c_rid), faa_data in FAA_CACHE.items():
+        if c_rid == identifier:
+            return jsonify({'status': 'ok', 'faa_data': faa_data})
+    for (c_mac, c_rid), faa_data in FAA_CACHE.items():
+        if c_mac == identifier:
+            return jsonify({'status': 'ok', 'faa_data': faa_data})
+    return jsonify({'status': 'error', 'message': 'No FAA data found for this identifier'}), 404
+
+# ----------------------
+# ZMQ & TAK Settings API Endpoints
+# ----------------------
+@app.route('/api/zmq_settings', methods=['GET'])
+def api_get_zmq_settings():
+    return jsonify(ZMQ_SETTINGS)
+
+@app.route('/api/zmq_settings', methods=['POST'])
+def api_post_zmq_settings():
+    data = request.get_json()
+    ZMQ_SETTINGS['enabled'] = data.get('enabled', ZMQ_SETTINGS['enabled'])
+    ZMQ_SETTINGS['endpoint'] = data.get('endpoint', ZMQ_SETTINGS['endpoint'])
+    return jsonify(ZMQ_SETTINGS)
+
+@app.route('/api/tak_settings', methods=['GET'])
+def api_get_tak_settings():
+    return jsonify(TAK_SETTINGS)
+
+@app.route('/api/tak_settings', methods=['POST'])
+def api_post_tak_settings():
+    data = request.get_json()
+    TAK_SETTINGS['enabled'] = data.get('enabled', TAK_SETTINGS['enabled'])
+    TAK_SETTINGS['endpoint'] = data.get('endpoint', TAK_SETTINGS['endpoint'])
+    TAK_SETTINGS['skipVerify'] = data.get('skipVerify', TAK_SETTINGS['skipVerify'])
+    return jsonify(TAK_SETTINGS)
+
+@app.route('/api/upload_tak_certs', methods=['POST'])
+def api_upload_tak_certs():
+    if 'p12' not in request.files:
+        return jsonify({'status': 'error', 'message': 'No P12 file provided'}), 400
+    p12 = request.files['p12']
+    password = request.form.get('password', '')
+    cert_path = os.path.join(BASE_DIR, 'tak.p12')
+    p12.save(cert_path)
+    with open(os.path.join(BASE_DIR, 'tak_password.txt'), 'w') as f:
+        f.write(password)
+    return jsonify({'status': 'ok'})
 
 # ----------------------
 # HTML & JS (UI) Section
@@ -543,32 +621,64 @@ HTML_PAGE = '''
       font-size: 0.7em;
     }
     
-    #filterBox {
-      position: absolute;
-      top: 10px;
-      right: 10px;
-      background: rgba(0,0,0,0.8);
-      padding: 8px;
-      border: 1px solid lime;
-      border-radius: 10px;
-      color: lime;
-      font-family: monospace;
-      max-width: 300px;
-      max-height: 80vh;
-      z-index: 1000;
-    }
+        #filterBox {
+          position: absolute;
+          top: 10px;
+          right: 10px;
+          background: rgba(0,0,0,0.8);
+          padding: 8px;
+          width: 18.75vw;
+          border: 1px solid lime;
+          border-radius: 10px;
+          color: lime;
+          font-family: monospace;
+          max-height: 95vh;
+          overflow-y: auto;
+          overflow-x: hidden;
+          z-index: 1000;
+        }
+        /* Auto-size inputs inside filterBox */
+        #filterBox input[type="text"],
+        #filterBox input[type="password"],
+        #filterBox input[type="range"],
+        #filterBox select {
+          width: auto !important;
+          min-width: 0;
+        }
     #filterBox.collapsed #filterContent {
       display: none;
     }
+    /* Tighten header when collapsed */
+    #filterBox.collapsed {
+      padding: 4px;
+      width: auto;
+    }
+    #filterBox.collapsed #filterHeader {
+      padding: 0;
+    }
+    #filterBox.collapsed #filterHeader h3 {
+      display: inline-block;
+      flex: none;
+      width: auto;
+      margin: 0;
+      color: #FF00FF;
+    }
+# Add margin to filterToggle when collapsed
+    #filterBox.collapsed #filterHeader #filterToggle {
+      margin-left: 5px;
+    }
     #filterBox:not(.collapsed) #filterHeader h3 {
-      visibility: hidden;
+      display: none;
     }
     #filterHeader {
       display: flex;
       align-items: center;
     }
+    #filterBox:not(.collapsed) #filterHeader {
+      justify-content: flex-end;
+    }
     #filterHeader h3 {
-      flex: 1;
+      flex: none;
       text-align: center;
       margin: 0;
       font-size: 1em;
@@ -603,6 +713,28 @@ HTML_PAGE = '''
       padding: 3px;
       cursor: pointer;
     }
+    .drone-item.no-gps {
+      position: relative;
+    }
+    .drone-item.no-gps:hover::after {
+      content: attr(data-tooltip);
+      position: absolute;
+      bottom: 100%;
+      left: 50%;
+      transform: translateX(-50%);
+      background: black;
+      color: #00FF00;
+      padding: 2px 4px;
+      border-radius: 3px;
+      white-space: nowrap;
+      font-family: monospace;
+      font-size: 0.75em;
+      z-index: 2000;
+    }
+    /* Highlight recently seen drones */
+    .drone-item.recent {
+      box-shadow: 0 0 0 1px lime;
+    }
     .placeholder {
       border: 2px solid transparent;
       border-image: linear-gradient(to right, lime 85%, yellow 15%) 1;
@@ -624,7 +756,7 @@ HTML_PAGE = '''
       white-space: normal;
     }
     .leaflet-popup-tip { background: lime; }
-    button { margin-top: 4px; padding: 3px; font-size: 0.8em; border: none; background-color: #333; color: lime; cursor: pointer; }
+    button { margin-top: 4px; padding: 3px; font-size: 0.8em; border: none; background-color: #333; color: lime; cursor: pointer; width: auto; }
     select { background-color: #333; color: lime; border: none; padding: 3px; }
     .leaflet-control-zoom-in, .leaflet-control-zoom-out {
       background: rgba(0,0,0,0.8);
@@ -734,12 +866,13 @@ HTML_PAGE = '''
     /* Download buttons styling */
     #downloadButtons {
       display: flex;
-      justify-content: space-between;
+      width: 100%;
+      gap: 4px;
       margin-top: 8px;
     }
     #downloadButtons button {
       flex: 1;
-      margin: 0 4px;
+      margin: 0;
       padding: 4px;
       font-size: 0.8em;
       border: 1px solid lime;
@@ -769,7 +902,7 @@ HTML_PAGE = '''
     /* Staleout slider styling – match popup sliders */
     #staleoutSlider {
       -webkit-appearance: none;
-      width: 80%;
+      width: 100%;
       height: 3px;
       background: transparent;
       border: none;
@@ -951,22 +1084,53 @@ HTML_PAGE = '''
       </div>
       <div style="margin-top:5px;">
         <div style="display:flex; justify-content:center; align-items:center; margin-top:5px;">
-          <input type="text" id="zmqIP" placeholder="127.0.0.1" style="background-color:#222;color:#FF00FF;border:1px solid #FF00FF;width:55%;padding:4px;margin-right:5px;">
+          <input type="text" id="zmqIP" placeholder="127.0.0.1" style="background-color:#222;color:#FF00FF;border:1px solid #FF00FF;padding:4px;margin-right:5px;width:auto;">
           <span style="color:lime;">:</span>
-          <input type="text" id="zmqPort" placeholder="4224" style="background-color:#222;color:#FF00FF;border:1px solid #FF00FF;width:25%;padding:4px;margin-left:5px;">
+          <input type="text" id="zmqPort" placeholder="4224" style="background-color:#222;color:#FF00FF;border:1px solid #FF00FF;padding:4px;margin-left:5px;width:auto;">
         </div>
-        <button id="applyZmqSettings" style="margin-top:5px;width:40%;padding:5px;border:1px solid lime;background:#333;color:lime;font-family:monospace;cursor:pointer;border-radius:5px;">Update ZMQ</button>
+        <button id="applyZmqSettings" style="margin-top:5px;padding:5px;border:1px solid lime;background:#333;color:lime;font-family:monospace;cursor:pointer;border-radius:5px;">Update ZMQ</button>
       </div>
       <div style="color:#FF00FF;font-family:monospace;font-size:0.75em;white-space:normal;line-height:1.2;margin-top:4px;text-align:center;">
         Connect to ZMQ decoder via direct IP connection
       </div>
     </div>
+    <!-- TAK Mode Section -->
+    <div id="takSection" style="margin-top:8px; text-align:center;">
+      <div style="margin-top:8px; display:flex; align-items:center; justify-content:center; height:20px;">
+        <label style="color:lime; font-family:monospace; margin-right:8px;">TAK Mode</label>
+        <label class="switch">
+          <input type="checkbox" id="takModeSwitch">
+          <span class="slider"></span>
+        </label>
+      </div>
+      <div id="takSettings" style="margin-top:5px; text-align:center;">
+        <div style="display:flex; justify-content:center; align-items:center; margin-top:5px;">
+          <input type="text" id="takIP" value="127.0.0.1" style="background-color:#222;color:#FF00FF;border:1px solid #FF00FF;padding:4px;margin-right:5px;width:auto;">
+          <span style="color:lime;">:</span>
+          <input type="text" id="takPort" value="8087" style="background-color:#222;color:#FF00FF;border:1px solid #FF00FF;padding:4px;margin-left:5px;width:auto;">
+        </div>
+        <div style="margin-top:5px; display:flex; align-items:center; justify-content:center;">
+          <label for="takSkipVerify" style="color:lime; font-family:monospace; margin-right:8px;">Skip Verify</label>
+          <input type="checkbox" id="takSkipVerify" style="transform: scale(1.2);"/>
+        </div>
+        <div style="margin-top:5px; display:flex; align-items:center; justify-content:center;">
+          <button id="takP12Button" style="padding:5px;border:1px solid lime;background:#333;color:lime;font-family:monospace;cursor:pointer;border-radius:5px;">
+            Upload P12
+          </button>
+          <input type="file" id="takP12" accept=".p12" style="display:none;"/>
+          <input type="password" id="takP12Pass" placeholder="Password" style="margin-left:8px;background-color:#222;color:#87CEEB;border:1px solid #FF00FF;padding:4px;width:auto;">
+        </div>
+        <div id="takP12Filename" style="color:#FF00FF;font-family:monospace;margin-top:4px;text-align:center;"></div>
+        <button id="applyTakSettings" style="margin-top:5px;padding:5px;border:1px solid lime;background:#333;color:lime;font-family:monospace;cursor:pointer;border-radius:5px;">Update TAK</button>
+        <div style="height:8px;"></div>
+      </div>
+    </div>
     <!-- Staleout Slider -->
-    <div style="margin-top:8px; text-align:center;">
-      <label style="color:lime; font-family:monospace; margin-bottom:4px; display:block;">Staleout Time</label>
+    <div style="margin-top:8px; display:flex; flex-direction:column; align-items:stretch; width:100%; box-sizing:border-box;">
+      <label style="color:lime; font-family:monospace; margin-bottom:4px; display:block; width:100%; text-align:center;">Staleout Time</label>
       <input type="range" id="staleoutSlider" min="1" max="5" step="1" value="1" 
-             style="width:80%; border:1px solid lime; margin-bottom:4px;">
-      <div id="staleoutValue" style="color:lime; font-family:monospace;">1 min</div>
+             style="width:100%; border:1px solid lime; margin-bottom:4px;">
+      <div id="staleoutValue" style="color:lime; font-family:monospace; width:100%; text-align:center;">1 min</div>
     </div>
   </div>
 </div>
@@ -1019,6 +1183,57 @@ document.addEventListener('DOMContentLoaded', () => {
   updateDataInterval = setInterval(updateData, mainSwitch && mainSwitch.checked ? 1000 : 200);
 
   // ZMQ Settings
+  // TAK Settings
+  if (localStorage.getItem('takEnabled') === null) { localStorage.setItem('takEnabled','false'); }
+  const takSwitch      = document.getElementById('takModeSwitch');
+  const takIP          = document.getElementById('takIP');
+  const takPort        = document.getElementById('takPort');
+  const takSkipVerify  = document.getElementById('takSkipVerify');
+  const takP12         = document.getElementById('takP12');
+  const takP12Button   = document.getElementById('takP12Button');
+  const takP12Filename = document.getElementById('takP12Filename');
+  const applyTakSettings = document.getElementById('applyTakSettings');
+  takP12Button.addEventListener('click', () => takP12.click());
+  takP12.addEventListener('change', () => {
+    takP12Filename.textContent = takP12.files.length ? takP12.files[0].name : '';
+  });
+  // Initialize TAK UI from storage
+  takSwitch.checked = (localStorage.getItem('takEnabled') === 'true');
+  const savedEndpoint = localStorage.getItem('takEndpoint');
+  if (savedEndpoint) {
+    const [h, p] = savedEndpoint.split(':');
+    takIP.value = h; takPort.value = p;
+  }
+  takSkipVerify.checked = (localStorage.getItem('takSkipVerify') === 'true');
+  takIP.addEventListener('change', () => {
+    localStorage.setItem('takEndpoint', `${takIP.value.trim()}:${takPort.value.trim()}`);
+  });
+  takPort.addEventListener('change', () => {
+    localStorage.setItem('takEndpoint', `${takIP.value.trim()}:${takPort.value.trim()}`);
+  });
+  takSkipVerify.addEventListener('change', () => {
+    localStorage.setItem('takSkipVerify', takSkipVerify.checked);
+  });
+  takSwitch.onchange = () => {
+    localStorage.setItem('takEnabled', takSwitch.checked);
+  };
+  applyTakSettings.addEventListener('click', () => {
+    applyTakSettings.style.backgroundColor = 'purple';
+    setTimeout(() => { applyTakSettings.style.backgroundColor = '#333'; }, 300);
+    const endpoint = `${takIP.value.trim()}:${takPort.value.trim()}`;
+    localStorage.setItem('takEndpoint', endpoint);
+    localStorage.setItem('takSkipVerify', takSkipVerify.checked);
+    const formData = new FormData();
+    if (takP12.files.length) formData.append('p12', takP12.files[0]);
+    formData.append('password', takP12Pass.value);
+    fetch('/api/upload_tak_certs', { method: 'POST', body: formData })
+      .catch(err => console.error('Error uploading TAK certs:', err));
+    fetch('/api/tak_settings', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({enabled: takSwitch.checked, endpoint, skipVerify: takSkipVerify.checked})
+    }).catch(err => console.error('Error updating TAK settings:', err));
+  });
   if (localStorage.getItem('zmqEnabled') === null) { localStorage.setItem('zmqEnabled','false'); }
   const zmqSwitch = document.getElementById('zmqModeSwitch');
     // Persist ZMQ toggle state on change so reload reflects current setting
@@ -1062,6 +1277,18 @@ document.addEventListener('DOMContentLoaded', () => {
         localStorage.setItem('zmqEndpoint', data.endpoint);
       })
       .catch(err => console.error('Error fetching ZMQ settings:', err));
+
+    // Initialize TAK settings from server
+    fetch('/api/tak_settings')
+      .then(res => res.json())
+      .then(data => {
+        takSwitch.checked = data.enabled;
+        const [h, p] = data.endpoint.split(':');
+        takIP.value = h;
+        takPort.value = p;
+        takSkipVerify.checked = data.skipVerify;
+      })
+      .catch(err => console.error('Error fetching TAK settings:', err));
   }
 
   // Staleout slider initialization
@@ -1741,6 +1968,13 @@ function updateComboList(data) {
     let item = comboListItems[mac];
     if (!item) {
       item = document.createElement("div");
+      // Tooltip for drones without valid GPS
+      const det = data[mac];
+      const hasGps = det && det.drone_lat && det.drone_long && det.drone_lat !== 0 && det.drone_long !== 0;
+      if (!hasGps) {
+        item.classList.add('no-gps');
+        item.setAttribute('data-tooltip', 'awaiting valid gps coordinates');
+      }
       comboListItems[mac] = item;
       item.className = "drone-item";
       item.addEventListener("dblclick", () => {
@@ -1768,6 +2002,9 @@ function updateComboList(data) {
     const color = get_color_for_mac(mac);
     item.style.borderColor = color;
     item.style.color = color;
+    // Mark items seen in the last 15 seconds
+    const isRecent = detection && ((currentTime - detection.last_update) <= 15);
+    item.classList.toggle('recent', isRecent);
     if (isActive) {
       if (item.parentNode !== activePlaceholder) { activePlaceholder.appendChild(item); }
     } else {
@@ -2359,3 +2596,281 @@ def download_aliases():
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)
+#!/usr/bin/env python3
+import os
+import json
+import csv
+import time
+from datetime import datetime
+from flask import Flask, request, jsonify
+
+# --- ZMQ & TAK Settings (persist in memory for now) ---
+ZMQ_SETTINGS = {'enabled': False, 'endpoint': 'tcp://127.0.0.1:4224'}
+TAK_SETTINGS = {'enabled': False, 'endpoint': '127.0.0.1:8087', 'skipVerify': False}
+
+app = Flask(__name__)
+
+# --- FAA Data Cache (simple in-memory for example) ---
+FAA_CACHE = {}  # key: (mac, remote_id) or (mac, ""), value: faa_data dict
+TRACKED_PAIRS = {}  # key: mac, value: dict with at least 'basic_id' and 'faa_data'
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+FAA_LOG_FILENAME = os.path.join(BASE_DIR, "faa_log.csv")
+
+# --- FAA Query API Endpoint ---
+@app.route('/api/query_faa', methods=['POST'])
+def api_query_faa():
+    data = request.get_json()
+    mac = data.get("mac")
+    remote_id = data.get("remote_id")
+    if not mac or not remote_id:
+        return jsonify({"status": "error", "message": "Missing mac or remote_id"}), 400
+    # Simulate FAA API query
+    faa_result = {
+        "data": {
+            "items": [
+                {
+                    "makeName": "ExampleMake",
+                    "modelName": "ModelX",
+                    "series": "A1",
+                    "trackingNumber": "123456",
+                    "complianceCategories": "Standard",
+                    "updatedAt": datetime.now().isoformat()
+                }
+            ]
+        }
+    }
+    # Save to cache and tracked_pairs
+    FAA_CACHE[(mac, remote_id)] = faa_result
+    TRACKED_PAIRS[mac] = {"basic_id": remote_id, "faa_data": faa_result}
+    # Log to CSV
+    if FAA_LOG_FILENAME:
+        try:
+            file_exists = os.path.isfile(FAA_LOG_FILENAME)
+            with open(FAA_LOG_FILENAME, "a", newline='') as csvfile:
+                fieldnames = ["timestamp", "mac", "remote_id", "faa_response"]
+                writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+                if not file_exists:
+                    writer.writeheader()
+                writer.writerow({
+                    "timestamp": datetime.now().isoformat(),
+                    "mac": mac,
+                    "remote_id": remote_id,
+                    "faa_response": json.dumps(faa_result)
+                })
+        except Exception as e:
+            print("Error writing to FAA log CSV:", e)
+    return jsonify({"status": "ok", "faa_data": faa_result})
+
+# --- FAA Data GET API Endpoint (by MAC or basic_id) ---
+@app.route('/api/faa/<identifier>', methods=['GET'])
+def api_get_faa(identifier):
+    """
+    Retrieve cached FAA data by MAC address or by basic_id (remote ID).
+    """
+    # Lookup by MAC in tracked_pairs
+    if identifier in TRACKED_PAIRS and 'faa_data' in TRACKED_PAIRS[identifier]:
+        return jsonify({'status': 'ok', 'faa_data': TRACKED_PAIRS[identifier]['faa_data']})
+    # Lookup by basic_id in tracked_pairs
+    for mac, det in TRACKED_PAIRS.items():
+        if det.get('basic_id') == identifier and 'faa_data' in det:
+            return jsonify({'status': 'ok', 'faa_data': det['faa_data']})
+    # FAA_CACHE search by remote_id then by MAC
+    for (c_mac, c_rid), faa_data in FAA_CACHE.items():
+        if c_rid == identifier:
+            return jsonify({'status': 'ok', 'faa_data': faa_data})
+    for (c_mac, c_rid), faa_data in FAA_CACHE.items():
+        if c_mac == identifier:
+            return jsonify({'status': 'ok', 'faa_data': faa_data})
+    return jsonify({'status': 'error', 'message': 'No FAA data found for this identifier'}), 404
+
+# --- ZMQ & TAK Settings API Endpoints ---
+@app.route('/api/zmq_settings', methods=['GET'])
+def api_get_zmq_settings():
+    return jsonify(ZMQ_SETTINGS)
+
+@app.route('/api/zmq_settings', methods=['POST'])
+def api_post_zmq_settings():
+    data = request.get_json()
+    ZMQ_SETTINGS['enabled'] = data.get('enabled', ZMQ_SETTINGS['enabled'])
+    ZMQ_SETTINGS['endpoint'] = data.get('endpoint', ZMQ_SETTINGS['endpoint'])
+    return jsonify(ZMQ_SETTINGS)
+
+@app.route('/api/tak_settings', methods=['GET'])
+def api_get_tak_settings():
+    return jsonify(TAK_SETTINGS)
+
+@app.route('/api/tak_settings', methods=['POST'])
+def api_post_tak_settings():
+    data = request.get_json()
+    TAK_SETTINGS['enabled'] = data.get('enabled', TAK_SETTINGS['enabled'])
+    TAK_SETTINGS['endpoint'] = data.get('endpoint', TAK_SETTINGS['endpoint'])
+    TAK_SETTINGS['skipVerify'] = data.get('skipVerify', TAK_SETTINGS['skipVerify'])
+    return jsonify(TAK_SETTINGS)
+
+@app.route('/api/upload_tak_certs', methods=['POST'])
+def api_upload_tak_certs():
+    if 'p12' not in request.files:
+        return jsonify({'status': 'error', 'message': 'No P12 file provided'}), 400
+    p12 = request.files['p12']
+    password = request.form.get('password', '')
+    cert_path = os.path.join(BASE_DIR, 'tak.p12')
+    p12.save(cert_path)
+    with open(os.path.join(BASE_DIR, 'tak_password.txt'), 'w') as f:
+        f.write(password)
+    return jsonify({'status': 'ok'})
+
+# --- HTML Template (with TAK section and prefilled inputs) ---
+HTML_TEMPLATE = '''
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Mesh Mapper</title>
+  <style>
+    body { background-color: black; color: lime; font-family: monospace; }
+    #zmqSection, #takSection { margin-top: 8px; text-align: center; }
+    .switch { position: relative; display: inline-block; width: 40px; height: 20px; }
+    .switch input { opacity: 0; width: 0; height: 0; }
+    .slider { position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0; background-color: #555; transition: .4s; border-radius: 20px; }
+    .slider:before {
+      position: absolute;
+      content: "";
+      height: 16px;
+      width: 16px;
+      left: 2px;
+      top: 50%;
+      background-color: lime;
+      border: 1px solid #9B30FF;
+      transition: .4s;
+      border-radius: 50%;
+      transform: translateY(-50%);
+    }
+    .switch input:checked + .slider { background-color: lime; }
+    .switch input:checked + .slider:before {
+      transform: translateX(20px) translateY(-50%);
+      border: 1px solid #9B30FF;
+    }
+    input[type="text"], input[type="password"] { background-color: #222; color: #FF00FF; border: 1px solid #FF00FF; padding: 4px; }
+    button { padding: 5px; border: 1px solid lime; background: #333; color: lime; border-radius: 5px; font-family: monospace; }
+  </style>
+</head>
+<body>
+  <h1>Mesh Mapper</h1>
+  <div id="zmqSection">
+    <div style="margin-top:8px; display:flex; align-items:center; justify-content:center; height:20px;">
+      <label style="color:lime; font-family:monospace; margin-right:8px;">ZMQ Mode</label>
+      <label class="switch">
+        <input type="checkbox" id="zmqModeSwitch">
+        <span class="slider"></span>
+      </label>
+    </div>
+    <div style="margin-top:5px;">
+      <div style="display:flex; justify-content:center; align-items:center; margin-top:5px;">
+        <input type="text" id="zmqIP" value="127.0.0.1" style="margin-right:5px;width:auto;">
+        <span style="color:lime;">:</span>
+        <input type="text" id="zmqPort" value="4224" style="margin-left:5px;width:auto;">
+      </div>
+      <button id="applyZmqSettings" style="margin-top:5px;">Update ZMQ</button>
+    </div>
+    <div style="color:#FF00FF;font-size:0.75em;margin-top:4px;">Connect to ZMQ decoder via direct IP connection</div>
+  </div>
+  <div id="takSection">
+    <div style="margin-top:8px; display:flex; align-items:center; justify-content:center; height:20px;">
+      <label style="color:lime; font-family:monospace; margin-right:8px;">TAK Mode</label>
+      <label class="switch">
+        <input type="checkbox" id="takModeSwitch">
+        <span class="slider"></span>
+      </label>
+    </div>
+    <div id="takSettings" style="margin-top:5px; text-align:center;">
+      <div style="display:flex; justify-content:center; align-items:center; margin-top:5px;">
+        <input type="text" id="takIP" value="127.0.0.1" style="margin-right:5px;width:auto;">
+        <span style="color:lime;">:</span>
+        <input type="text" id="takPort" value="8087" style="margin-left:5px;width:auto;">
+      </div>
+      <div style="margin-top:5px; display:flex; align-items:center; justify-content:center;">
+        <label for="takSkipVerify" style="color:lime; font-family:monospace; margin-right:8px;">Skip Verify</label>
+        <input type="checkbox" id="takSkipVerify" style="transform: scale(1.2);"/>
+      </div>
+      <div style="margin-top:5px; display:flex; align-items:center; justify-content:center;">
+        <button id="takP12Button">Upload P12</button>
+        <input type="file" id="takP12" accept=".p12" style="display:none;"/>
+        <input type="password" id="takP12Pass" placeholder="Password" style="margin-left:8px;width:auto;">
+      </div>
+      <div id="takP12Filename" style="color:#FF00FF;margin-top:4px;text-align:center;"></div>
+      <button id="applyTakSettings" style="margin-top:5px;">Update TAK</button>
+      <div style="height:8px;"></div>
+    </div>
+  </div>
+  <script>
+    // ZMQ Settings
+    const zmqSwitch = document.getElementById('zmqModeSwitch');
+    const zmqIP = document.getElementById('zmqIP');
+    const zmqPort = document.getElementById('zmqPort');
+    const applyZmqSettings = document.getElementById('applyZmqSettings');
+    // Load ZMQ settings from server
+    fetch('/api/zmq_settings').then(res => res.json()).then(data => {
+      zmqSwitch.checked = data.enabled;
+      try {
+        const url = new URL(data.endpoint);
+        zmqIP.value = url.hostname;
+        zmqPort.value = url.port;
+      } catch (e) {}
+    });
+    applyZmqSettings.onclick = function() {
+      const endpoint = `tcp://${zmqIP.value.trim()}:${zmqPort.value.trim()}`;
+      fetch('/api/zmq_settings', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({enabled: zmqSwitch.checked, endpoint: endpoint})
+      });
+    };
+    // TAK Settings
+    const takSwitch = document.getElementById('takModeSwitch');
+    const takIP = document.getElementById('takIP');
+    const takPort = document.getElementById('takPort');
+    const takSkipVerify = document.getElementById('takSkipVerify');
+    const takP12 = document.getElementById('takP12');
+    const takP12Button = document.getElementById('takP12Button');
+    const takP12Filename = document.getElementById('takP12Filename');
+    const takP12Pass = document.getElementById('takP12Pass');
+    const applyTakSettings = document.getElementById('applyTakSettings');
+    // Load TAK settings from server
+    fetch('/api/tak_settings').then(res => res.json()).then(data => {
+      takSwitch.checked = data.enabled;
+      try {
+        const [h, p] = data.endpoint.split(':');
+        takIP.value = h;
+        takPort.value = p;
+      } catch (e) {}
+      takSkipVerify.checked = data.skipVerify;
+    });
+    takP12Button.onclick = () => takP12.click();
+    takP12.onchange = () => {
+      takP12Filename.textContent = takP12.files.length ? takP12.files[0].name : '';
+    };
+    applyTakSettings.onclick = function() {
+      const endpoint = `${takIP.value.trim()}:${takPort.value.trim()}`;
+      fetch('/api/tak_settings', {
+        method: 'POST',
+        headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({enabled: takSwitch.checked, endpoint, skipVerify: takSkipVerify.checked})
+      });
+      const formData = new FormData();
+      if (takP12.files.length) formData.append('p12', takP12.files[0]);
+      formData.append('password', takP12Pass.value);
+      fetch('/api/upload_tak_certs', { method: 'POST', body: formData });
+    };
+  </script>
+</body>
+</html>
+'''
+
+@app.route('/')
+def index():
+    return HTML_TEMPLATE
+
+if __name__ == '__main__':
+    app.run(debug=True, port=5000)
