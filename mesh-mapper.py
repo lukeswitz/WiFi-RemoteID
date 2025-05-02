@@ -1148,6 +1148,14 @@ HTML_PAGE = '''
   })();
 // --- Node Mode Main Switch & Polling Interval Sync ---
 document.addEventListener('DOMContentLoaded', () => {
+  // Restore filter collapsed state
+  const filterBox = document.getElementById('filterBox');
+  const filterToggle = document.getElementById('filterToggle');
+  const wasCollapsed = localStorage.getItem('filterCollapsed') === 'true';
+  if (wasCollapsed) {
+    filterBox.classList.add('collapsed');
+    filterToggle.textContent = '[+]';
+  }
   // restore follow-lock on reload
   const storedLock = localStorage.getItem('followLock');
   if (storedLock) {
@@ -1182,8 +1190,7 @@ document.addEventListener('DOMContentLoaded', () => {
   updateData();
   updateDataInterval = setInterval(updateData, mainSwitch && mainSwitch.checked ? 1000 : 200);
 
-  // ZMQ Settings
-  // TAK Settings
+  // --- ZMQ & TAK Settings: Load server settings first, then apply localStorage overrides ---
   if (localStorage.getItem('takEnabled') === null) { localStorage.setItem('takEnabled','false'); }
   const takSwitch      = document.getElementById('takModeSwitch');
   const takIP          = document.getElementById('takIP');
@@ -1197,7 +1204,63 @@ document.addEventListener('DOMContentLoaded', () => {
   takP12.addEventListener('change', () => {
     takP12Filename.textContent = takP12.files.length ? takP12.files[0].name : '';
   });
-  // Initialize TAK UI from storage
+
+  if (localStorage.getItem('zmqEnabled') === null) { localStorage.setItem('zmqEnabled','false'); }
+  const zmqSwitch = document.getElementById('zmqModeSwitch');
+  const zmqIP = document.getElementById('zmqIP');
+  const zmqPort = document.getElementById('zmqPort');
+  const applyZmqSettings = document.getElementById('applyZmqSettings');
+  // Load server settings early
+  fetch('/api/zmq_settings')
+    .then(res => res.json())
+    .then(data => {
+      // zmqSwitch.checked = data.enabled;
+      try {
+        const url = new URL(data.endpoint);
+        zmqIP.value = url.hostname;
+        zmqPort.value = url.port;
+      } catch (e) {}
+    })
+    .catch(err => console.error('Error fetching ZMQ settings:', err));
+  fetch('/api/tak_settings')
+    .then(res => res.json())
+    .then(data => {
+      // takSwitch.checked = data.enabled;
+      const [h, p] = data.endpoint.split(':');
+      takIP.value = h;
+      takPort.value = p;
+      // takSkipVerify.checked = data.skipVerify;
+    })
+    .catch(err => console.error('Error fetching TAK settings:', err));
+  // Then apply localStorage overrides
+  // ZMQ
+  if (zmqSwitch && zmqIP && zmqPort && applyZmqSettings) {
+    zmqSwitch.checked = (localStorage.getItem('zmqEnabled') === 'true');
+    const storedEndpoint = localStorage.getItem('zmqEndpoint') || 'tcp://127.0.0.1:4224';
+    try {
+      const url = new URL(storedEndpoint);
+      zmqIP.value = url.hostname;
+      zmqPort.value = url.port;
+    } catch (e) {
+      zmqIP.value = '127.0.0.1';
+      zmqPort.value = '4224';
+    }
+    applyZmqSettings.addEventListener('click', function() {
+      this.style.backgroundColor = 'purple';
+      setTimeout(() => { this.style.backgroundColor = '#333'; }, 300);
+      const endpoint = `tcp://${zmqIP.value.trim()}:${zmqPort.value.trim()}`;
+      localStorage.setItem('zmqEnabled', zmqSwitch.checked);
+      localStorage.setItem('zmqEndpoint', endpoint);
+      fetch('/api/zmq_settings', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({enabled: zmqSwitch.checked, endpoint: endpoint})
+      }).catch(err => console.error('Error applying ZMQ settings:', err));
+    });
+    // Persist ZMQ toggle state on change so reload reflects current setting
+    zmqSwitch.onchange = () => { localStorage.setItem('zmqEnabled', zmqSwitch.checked); };
+  }
+  // TAK
   takSwitch.checked = (localStorage.getItem('takEnabled') === 'true');
   const savedEndpoint = localStorage.getItem('takEndpoint');
   if (savedEndpoint) {
@@ -1234,62 +1297,6 @@ document.addEventListener('DOMContentLoaded', () => {
       body: JSON.stringify({enabled: takSwitch.checked, endpoint, skipVerify: takSkipVerify.checked})
     }).catch(err => console.error('Error updating TAK settings:', err));
   });
-  if (localStorage.getItem('zmqEnabled') === null) { localStorage.setItem('zmqEnabled','false'); }
-  const zmqSwitch = document.getElementById('zmqModeSwitch');
-    // Persist ZMQ toggle state on change so reload reflects current setting
-    zmqSwitch.onchange = () => { localStorage.setItem('zmqEnabled', zmqSwitch.checked); };
-  const zmqIP = document.getElementById('zmqIP');
-  const zmqPort = document.getElementById('zmqPort');
-  const applyZmqSettings = document.getElementById('applyZmqSettings');
-  if (zmqSwitch && zmqIP && zmqPort && applyZmqSettings) {
-    zmqSwitch.checked = (localStorage.getItem('zmqEnabled') === 'true');
-    const storedEndpoint = localStorage.getItem('zmqEndpoint') || 'tcp://127.0.0.1:4224';
-    try {
-      const url = new URL(storedEndpoint);
-      zmqIP.value = url.hostname;
-      zmqPort.value = url.port;
-    } catch (e) {
-      zmqIP.value = '127.0.0.1';
-      zmqPort.value = '4224';
-    }
-    applyZmqSettings.addEventListener('click', function() {
-      this.style.backgroundColor = 'purple';
-      setTimeout(() => { this.style.backgroundColor = '#333'; }, 300);
-      const endpoint = `tcp://${zmqIP.value.trim()}:${zmqPort.value.trim()}`;
-      localStorage.setItem('zmqEnabled', zmqSwitch.checked);
-      localStorage.setItem('zmqEndpoint', endpoint);
-      fetch('/api/zmq_settings', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({enabled: zmqSwitch.checked, endpoint: endpoint})
-      }).catch(err => console.error('Error applying ZMQ settings:', err));
-    });
-    fetch('/api/zmq_settings')
-      .then(res => res.json())
-      .then(data => {
-        zmqSwitch.checked = data.enabled;
-        try {
-          const url = new URL(data.endpoint);
-          zmqIP.value = url.hostname;
-          zmqPort.value = url.port;
-        } catch (e) {}
-        localStorage.setItem('zmqEnabled', data.enabled);
-        localStorage.setItem('zmqEndpoint', data.endpoint);
-      })
-      .catch(err => console.error('Error fetching ZMQ settings:', err));
-
-    // Initialize TAK settings from server
-    fetch('/api/tak_settings')
-      .then(res => res.json())
-      .then(data => {
-        takSwitch.checked = data.enabled;
-        const [h, p] = data.endpoint.split(':');
-        takIP.value = h;
-        takPort.value = p;
-        takSkipVerify.checked = data.skipVerify;
-      })
-      .catch(err => console.error('Error fetching TAK settings:', err));
-  }
 
   // Staleout slider initialization
   const staleoutSlider = document.getElementById('staleoutSlider');
@@ -1304,6 +1311,22 @@ document.addEventListener('DOMContentLoaded', () => {
       localStorage.setItem('staleoutMinutes', minutes.toString());
     };
   }
+  // Filter box toggle persistence
+  if (filterToggle && filterBox) {
+    filterToggle.addEventListener('click', function() {
+      filterBox.classList.toggle('collapsed');
+      filterToggle.textContent = filterBox.classList.contains('collapsed') ? '[+]' : '[-]';
+      // Persist filter collapsed state
+      localStorage.setItem('filterCollapsed', filterBox.classList.contains('collapsed'));
+    });
+  }
+});
+// Fallback collapse handler to ensure filter toggle works
+document.getElementById("filterToggle").addEventListener("click", function() {
+  const box = document.getElementById("filterBox");
+  const isCollapsed = box.classList.toggle("collapsed");
+  this.textContent = isCollapsed ? "[+]" : "[-]";
+  localStorage.setItem('filterCollapsed', isCollapsed);
 });
 // Optimize tile loading for smooth zoom and aggressive preloading
 L.Map.prototype.options.fadeAnimation = false;
