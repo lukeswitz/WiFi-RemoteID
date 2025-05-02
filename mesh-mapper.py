@@ -637,6 +637,12 @@ HTML_PAGE = '''
           overflow-x: hidden;
           z-index: 1000;
         }
+        @media (max-width: 600px) {
+          #filterBox {
+            width: 37.5vw;
+            max-width: 90vw;
+          }
+        }
         /* Auto-size inputs inside filterBox */
         #filterBox input[type="text"],
         #filterBox input[type="password"],
