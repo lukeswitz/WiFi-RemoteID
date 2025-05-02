@@ -1871,12 +1871,28 @@ if (navigator.geolocation) {
 } else { console.error("Geolocation is not supported by this browser."); }
 
 function zoomToDrone(mac, detection) {
-  if (detection && detection.drone_lat && detection.drone_long && detection.drone_lat != 0 && detection.drone_long != 0) {
+  // Only zoom if we have valid, non-zero coordinates
+  if (
+    detection &&
+    detection.drone_lat !== undefined &&
+    detection.drone_long !== undefined &&
+    detection.drone_lat !== 0 &&
+    detection.drone_long !== 0
+  ) {
     safeSetView([detection.drone_lat, detection.drone_long], 18);
   }
 }
 
 function showHistoricalDrone(mac, detection) {
+  // Only map drones with valid, non-zero coordinates
+  if (
+    detection.drone_lat === undefined ||
+    detection.drone_long === undefined ||
+    detection.drone_lat === 0 ||
+    detection.drone_long === 0
+  ) {
+    return;
+  }
   const color = get_color_for_mac(mac);
   if (!droneMarkers[mac]) {
     droneMarkers[mac] = L.marker([detection.drone_lat, detection.drone_long], {
