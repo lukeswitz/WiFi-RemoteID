@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+import tempfile
+from cryptography.hazmat.primitives.serialization.pkcs12 import load_key_and_certificates
+from cryptography.hazmat.primitives import serialization
 import requests
 import json
 import logging
@@ -8,19 +11,247 @@ import serial.tools.list_ports
 import time
 import csv
 import os
-from datetime import datetime
+import subprocess
+from datetime import datetime, timedelta
 from flask import Flask, request, jsonify, redirect, url_for, render_template_string, send_file
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
-import zmq
-from zmq.error import ZMQError
 
-# ZMQ & TAK Settings Persistence
-ZMQ_SETTINGS = {'enabled': False, 'endpoint': 'tcp://127.0.0.1:4224'}
-TAK_SETTINGS = {'enabled': False, 'endpoint': '127.0.0.1:8087', 'skipVerify': False}
+import ssl
+import socket
+
+from urllib.parse import urlparse
+
+from typing import Optional
+import ssl, socket, threading, time, logging
+
+class TAKClient:  
+    """Client for CoT messaging over TCP/TLS with backoff & retries."""
+    def __init__(self,
+                 host: str,
+                 port: int,
+                 certfile: Optional[str] = None,
+                 keyfile: Optional[str] = None,
+                 skip_verify: bool = True,
+                 max_retries: int = -1,
+                 backoff_factor: float = 2.0,
+                 max_backoff: float = 60.0):
+        self.tak_host = host
+        self.tak_port = port
+        # Build TLS context from certfile/keyfile and skip_verify flag
+        if certfile or keyfile or skip_verify is not None:
+            ctx = ssl.create_default_context(ssl.Purpose.SERVER_AUTH)
+            if skip_verify:
+                ctx.check_hostname = False
+                ctx.verify_mode = ssl.CERT_NONE
+            if certfile and keyfile:
+                ctx.load_cert_chain(certfile=certfile, keyfile=keyfile)
+            self.tak_tls_context = ctx
+        else:
+            self.tak_tls_context = None
+        self.sock = None
+        self.max_retries = max_retries
+        self.backoff_factor = backoff_factor
+        self.max_backoff = max_backoff
+        self.retry_count = 0
+        self.connecting_lock = threading.Lock()
+
+    def connect(self):
+        while self.max_retries == -1 or self.retry_count < self.max_retries:
+            try:
+                raw = socket.create_connection((self.tak_host, self.tak_port), timeout=10)
+                self.sock = (self.tak_tls_context.wrap_socket(raw, server_hostname=self.tak_host)
+                             if self.tak_tls_context else raw)
+                logging.debug("Connected to TAK server via TCP/TLS")
+                self.retry_count = 0
+                return
+            except Exception as e:
+                wait = min(self.backoff_factor ** self.retry_count, self.max_backoff)
+                logging.error(f"TAKClient connect error: {e}, retry in {wait}s")
+                time.sleep(wait)
+                self.retry_count += 1
+        logging.critical("TAKClient max retries exceeded; giving up")
+        self.sock = None
+
+    def run_connect_loop(self):
+        while True:
+            if not self.sock:
+                with self.connecting_lock:
+                    if not self.sock:
+                        self.connect()
+            time.sleep(1)
+
+    def send(self, cot_xml: bytes):
+        if not self.sock:
+            logging.error("TAKClient: socket not connected")
+            return
+        try:
+            self.sock.sendall(cot_xml)
+            logging.debug(f"TAKClient sent CoT ({len(cot_xml)} bytes)")
+        except Exception as e:
+            logging.error(f"TAKClient send error: {e}")
+            self.close()
+
+    def close(self):
+        if self.sock:
+            try: self.sock.close()
+            except: pass
+            self.sock = None
+            logging.debug("TAKClient socket closed")
+
+
+
+class TAKUDPClient:
+    """UDP client for CoT messaging (unicast or multicast)."""
+    def __init__(self, host: str, port: int, interface: Optional[str] = None):
+        self.host = host
+        self.port = port
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        if interface:
+            try:
+                ip = socket.gethostbyname(interface)
+                self.sock.setsockopt(socket.IPPROTO_IP,
+                                     socket.IP_MULTICAST_IF,
+                                     socket.inet_aton(ip))
+            except:
+                pass
+
+    def send(self, cot_xml: bytes):
+        try:
+            self.sock.sendto(cot_xml, (self.host, self.port))
+            logging.debug(f"TAKUDPClient sent CoT ({len(cot_xml)} bytes) to {self.host}:{self.port}")
+        except Exception as e:
+            logging.error(f"TAKUDPClient send error: {e}")
+
+    def close(self):
+        self.sock.close()
+
+
+
+class CotMessenger:
+    """
+    Wraps TCP/TLS and UDP CoT sends. Call .send_cot(xml_bytes).
+    """
+    def __init__(self,
+                 tak_client: Optional[TAKClient] = None,
+                 tak_udp_client: Optional[TAKUDPClient] = None,
+                 multicast_address: Optional[str] = None,
+                 multicast_port: Optional[int] = None,
+                 enable_multicast: bool = False,
+                 multicast_interface: Optional[str] = None):
+        self.tak_client = tak_client
+        self.tak_udp_client = tak_udp_client
+        self.enable_multicast = enable_multicast
+        self.multicast_address = multicast_address
+        self.multicast_port = multicast_port
+        if enable_multicast and multicast_address and multicast_port:
+            self.mcast_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            if multicast_interface:
+                try:
+                    ip = socket.gethostbyname(multicast_interface)
+                    self.mcast_sock.setsockopt(socket.IPPROTO_IP,
+                                               socket.IP_MULTICAST_IF,
+                                               socket.inet_aton(ip))
+                except:
+                    pass
+        else:
+            self.mcast_sock = None
+
+    def send_cot(self, cot_xml: bytes, retry_count: int = 3, retry_delay: float = 1.0):
+        for _ in range(retry_count):
+            if self.tak_client:
+                self.tak_client.send(cot_xml)
+            if self.tak_udp_client:
+                self.tak_udp_client.send(cot_xml)
+            if self.enable_multicast and self.mcast_sock:
+                try:
+                    self.mcast_sock.sendto(cot_xml, (self.multicast_address, self.multicast_port))
+                except Exception as e:
+                    logging.error(f"CotMessenger multicast error: {e}")
+            return
+        logging.error("CotMessenger: failed to send CoT after retries")
+
+    def close(self):
+        if self.tak_client:
+            self.tak_client.close()
+        if self.tak_udp_client:
+            self.tak_udp_client.close()
+        if self.mcast_sock:
+            self.mcast_sock.close()
+
+
+
+
+TAK_SETTINGS = {'enabled': True, 'endpoint': '10.66.66.1:8444', 'skipVerify': True, 'p12Filename': ''}
+
+# ----------------------------------
 
 # Ensure file paths are absolute
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+# ----------------------------------
+# Persisted TAK settings
+SETTINGS_FILE = os.path.join(BASE_DIR, 'tak_settings.json')
+# Load persisted TAK_SETTINGS if present
+if os.path.isfile(SETTINGS_FILE):
+    try:
+        with open(SETTINGS_FILE, 'r') as f:
+            saved = json.load(f)
+            # Only update known keys
+            for key in ['enabled', 'endpoint', 'skipVerify', 'p12Filename']:
+                if key in saved:
+                    TAK_SETTINGS[key] = saved[key]
+    except Exception as e:
+        print(f"[TAK DEBUG] Failed to load persisted TAK settings: {e}")
+# ----------------------------------
+
+
+def init_tak_client():
+    global _tak_client, _cot_messenger
+    # Initialize TAK client and CoT messenger based on persisted settings
+    _tak_client = None
+    _cot_messenger = None
+    if TAK_SETTINGS.get('enabled', False):
+        host, port_str = TAK_SETTINGS['endpoint'].split(':')
+        certfile = keyfile = None
+        # If a P12 bundle was uploaded, unpack it for TLS
+        p12_path = os.path.join(BASE_DIR, 'tak.p12')
+        if os.path.isfile(p12_path):
+            try:
+                with open(p12_path, 'rb') as pf:
+                    p12_data = pf.read()
+                with open(os.path.join(BASE_DIR, 'tak_password.txt'), 'rb') as pwf:
+                    pwd = pwf.read()
+                priv_key, cert, additional_certs = load_key_and_certificates(p12_data, pwd)
+                # Write out PEM chain
+                certfile = os.path.join(BASE_DIR, 'tak_client_cert.pem')
+                keyfile = os.path.join(BASE_DIR, 'tak_client_key.pem')
+                with open(certfile, 'wb') as cf:
+                    cf.write(cert.public_bytes(serialization.Encoding.PEM))
+                    if additional_certs:
+                        for extra in additional_certs:
+                            cf.write(extra.public_bytes(serialization.Encoding.PEM))
+                with open(keyfile, 'wb') as kf:
+                    kf.write(priv_key.private_bytes(
+                        encoding=serialization.Encoding.PEM,
+                        format=serialization.PrivateFormat.PKCS8,
+                        encryption_algorithm=serialization.NoEncryption()
+                    ))
+            except Exception as e:
+                logging.error(f"Failed to unpack P12 on startup: {e}")
+        _tak_client = TAKClient(
+            host=host,
+            port=int(port_str),
+            certfile=certfile,
+            keyfile=keyfile,
+            skip_verify=TAK_SETTINGS.get('skipVerify', True)
+        )
+        _cot_messenger = CotMessenger(tak_client=_tak_client)
+        # Establish initial connection and start background reconnect loop
+        _tak_client.connect()
+        threading.Thread(target=_tak_client.run_connect_loop, daemon=True).start()
+    else:
+        _cot_messenger = CotMessenger(tak_client=None)
 
 
 
@@ -248,6 +479,39 @@ def update_detection(detection):
             'faa_data': json.dumps(detection.get('faa_data', {}))
         })
     generate_kml()
+    # ----------------------------------
+    # Publish Cursor-on-Target for this detection
+    try:
+        cot_time = datetime.utcnow().isoformat() + 'Z'
+        stale_time = (datetime.utcnow() + timedelta(seconds=staleThreshold)).isoformat() + 'Z'
+        # Drone event
+        drone_cot = (
+            f"<event version='2.0' uid='drone-{mac}' type='a-f-G-U-C' how='m-p' "
+            f"time='{cot_time}' start='{cot_time}' stale='{stale_time}'>"
+            f"<point lat='{detection['drone_lat']}' lon='{detection['drone_long']}' "
+            f"hae='{detection['drone_altitude']}' ce='9999999' le='9999999'/></event>"
+        )
+        print(f"[DEBUG] Drone COT XML: {drone_cot}")
+        if _cot_messenger:
+            _cot_messenger.send_cot(drone_cot.encode('utf-8'))
+        else:
+            logging.warning("CotMessenger not initialized; skipping drone CoT publish")
+        # Pilot event, if valid
+        if detection.get('pilot_lat', 0) and detection.get('pilot_long', 0):
+            pilot_cot = (
+                f"<event version='2.0' uid='pilot-{mac}' type='a-f-G-U-P' how='m-p' "
+                f"time='{cot_time}' start='{cot_time}' stale='{stale_time}'>"
+                f"<point lat='{detection['pilot_lat']}' lon='{detection['pilot_long']}' "
+                f"hae='0' ce='9999999' le='9999999'/></event>"
+            )
+            print(f"[DEBUG] Pilot COT XML: {pilot_cot}")
+            if _cot_messenger:
+                _cot_messenger.send_cot(pilot_cot.encode('utf-8'))
+            else:
+                logging.warning("CotMessenger not initialized; skipping pilot CoT publish")
+    except Exception as e:
+        print(f"[ERROR] COT publish failed: {e}")
+    # ----------------------------------
 
 # ----------------------
 # Global Follow Lock & Color Overrides
@@ -377,23 +641,24 @@ def api_get_faa(identifier):
             return jsonify({'status': 'ok', 'faa_data': faa_data})
     return jsonify({'status': 'error', 'message': 'No FAA data found for this identifier'}), 404
 
-# ----------------------
-# ZMQ & TAK Settings API Endpoints
-# ----------------------
-@app.route('/api/zmq_settings', methods=['GET'])
-def api_get_zmq_settings():
-    return jsonify(ZMQ_SETTINGS)
-
-@app.route('/api/zmq_settings', methods=['POST'])
-def api_post_zmq_settings():
-    data = request.get_json()
-    ZMQ_SETTINGS['enabled'] = data.get('enabled', ZMQ_SETTINGS['enabled'])
-    ZMQ_SETTINGS['endpoint'] = data.get('endpoint', ZMQ_SETTINGS['endpoint'])
-    return jsonify(ZMQ_SETTINGS)
 
 @app.route('/api/tak_settings', methods=['GET'])
 def api_get_tak_settings():
-    return jsonify(TAK_SETTINGS)
+    import os
+    settings = dict(TAK_SETTINGS)
+    settings['p12Filename'] = TAK_SETTINGS.get('p12Filename', '')
+    # indicate whether a password has been saved
+    pw_path = os.path.join(BASE_DIR, 'tak_password.txt')
+    settings['passwordSet'] = os.path.isfile(pw_path) and os.path.getsize(pw_path) > 0
+    password = ''
+    if os.path.isfile(pw_path):
+        try:
+            with open(pw_path, 'r') as pf:
+                password = pf.read()
+        except:
+            password = ''
+    settings['password'] = password
+    return jsonify(settings)
 
 @app.route('/api/tak_settings', methods=['POST'])
 def api_post_tak_settings():
@@ -401,7 +666,68 @@ def api_post_tak_settings():
     TAK_SETTINGS['enabled'] = data.get('enabled', TAK_SETTINGS['enabled'])
     TAK_SETTINGS['endpoint'] = data.get('endpoint', TAK_SETTINGS['endpoint'])
     TAK_SETTINGS['skipVerify'] = data.get('skipVerify', TAK_SETTINGS['skipVerify'])
-    return jsonify(TAK_SETTINGS)
+    # Persist TAK_SETTINGS to disk
+    try:
+        with open(SETTINGS_FILE, 'w') as f:
+            json.dump(TAK_SETTINGS, f)
+    except Exception as e:
+        print(f"[TAK DEBUG] Failed to save TAK settings: {e}")
+    # Live reinitialize TAK client and CoT messenger based on new setting
+    global _tak_client, _cot_messenger
+    if TAK_SETTINGS['enabled']:
+        host, port_str = TAK_SETTINGS['endpoint'].split(':')
+
+        # Load PKCS#12 certificate if provided
+        p12_path = os.path.join(BASE_DIR, 'tak.p12')
+        keyfile = certfile = None
+        if os.path.isfile(p12_path):
+            try:
+                with open(p12_path, 'rb') as pf:
+                    p12_data = pf.read()
+                with open(os.path.join(BASE_DIR, 'tak_password.txt'), 'rb') as pwf:
+                    pwd = pwf.read()
+                priv_key, cert, additional_certs = load_key_and_certificates(p12_data, pwd)
+                # Write cert and key to PEM for TLS context
+                certfile = os.path.join(BASE_DIR, 'tak_client_cert.pem')
+                keyfile = os.path.join(BASE_DIR, 'tak_client_key.pem')
+                with open(certfile, 'wb') as cf:
+                    # Write the client certificate and any chain certificates
+                    cf.write(cert.public_bytes(serialization.Encoding.PEM))
+                    if additional_certs:
+                        for extra in additional_certs:
+                            cf.write(extra.public_bytes(serialization.Encoding.PEM))
+                with open(keyfile, 'wb') as kf:
+                    kf.write(priv_key.private_bytes(
+                        encoding=serialization.Encoding.PEM,
+                        format=serialization.PrivateFormat.PKCS8,
+                        encryption_algorithm=serialization.NoEncryption()
+                    ))
+            except Exception as e:
+                logging.error(f"Failed to unpack P12 certificate: {e}")
+
+        # Initialize TAKClient with optional certfile/keyfile
+        _tak_client = TAKClient(
+            host=host,
+            port=int(port_str),
+            certfile=certfile,
+            keyfile=keyfile,
+            skip_verify=TAK_SETTINGS.get('skipVerify', True)
+        )
+        _cot_messenger = CotMessenger(tak_client=_tak_client)
+        # Establish initial connection and start background reconnect loop
+        _tak_client.connect()
+        threading.Thread(target=_tak_client.run_connect_loop, daemon=True).start()
+    else:
+        if _cot_messenger:
+            try:
+                _cot_messenger.close()
+            except:
+                pass
+        _tak_client = None
+        _cot_messenger = None
+    response = dict(TAK_SETTINGS)
+    response['p12Filename'] = TAK_SETTINGS.get('p12Filename', '')
+    return jsonify(response)
 
 @app.route('/api/upload_tak_certs', methods=['POST'])
 def api_upload_tak_certs():
@@ -413,7 +739,14 @@ def api_upload_tak_certs():
     p12.save(cert_path)
     with open(os.path.join(BASE_DIR, 'tak_password.txt'), 'w') as f:
         f.write(password)
-    return jsonify({'status': 'ok'})
+    TAK_SETTINGS['p12Filename'] = p12.filename
+    # Persist updated p12 filename
+    try:
+        with open(SETTINGS_FILE, 'w') as f:
+            json.dump(TAK_SETTINGS, f)
+    except Exception as e:
+        print(f"[TAK DEBUG] Failed to save p12Filename to settings: {e}")
+    return jsonify({'status':'ok','p12Filename': p12.filename})
 
 # ----------------------
 # HTML & JS (UI) Section
@@ -425,7 +758,37 @@ PORT_SELECTION_PAGE = '''
 <head>
   <meta charset="UTF-8">
   <title>Select USB Serial Ports</title>
+  <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700&display=swap" rel="stylesheet">
   <style>
+    /* Tooltip for collapsed TAK Mode */
+    .tooltip-container {
+        position: relative;
+        display: inline-block;
+    }
+    .tooltip-container .tak-tooltip {
+        visibility: hidden;
+        width: 168px;
+        background-color: rgba(0, 0, 0, 0.8);
+        color: #00FF00;
+        text-shadow: none;
+        font-family: monospace;
+        font-size: 0.56em;
+        padding: 4px;
+        position: absolute;
+        top: 100%;
+        left: 50%;
+        transform: translateX(-50%);
+        z-index: 100;
+        white-space: normal;
+        border-radius: 0;
+        margin-top: 5px;
+    }
+    .tooltip-container:hover .tak-tooltip {
+        visibility: visible;
+    }
+    .tooltip-container.expanded .tak-tooltip {
+        visibility: hidden;
+    }
     /* Hide tile seams */
     .leaflet-tile {
       border: none !important;
@@ -436,49 +799,124 @@ PORT_SELECTION_PAGE = '''
     .leaflet-container {
       background-color: black !important;
     }
-    body { background-color: black; color: lime; font-family: monospace; text-align: center;
+    body {
+      margin: 0;
+      padding: 0;
+      font-family: 'Orbitron', monospace;
+      background-color: #0a001f;
+      color: #0ff;
+      text-shadow: 0 0 8px #0ff, 0 0 16px #f0f;
+      text-align: center;
       zoom: 1.15;
     }
-    pre { font-size: 16px; margin: 20px auto; }
+    pre { font-size: 16px; margin: 10px auto; }
     form {
       display: inline-block;
-      text-align: left;
+      text-align: center;
     }
     li { list-style: none; margin: 10px 0; }
-    select { background-color: #333; color: lime; border: none; padding: 3px; margin-bottom: 10px; }
+    select {
+      background-color: #333;
+      color: lime;
+      border: none;
+      padding: 3px;
+      margin-bottom: 5px;
+      box-shadow: 0 0 4px #0ff;
+    }
     label { font-size: 18px; }
     /* Style and center the select-ports submit button */
     button[type="submit"] {
       display: block;
-      margin: 10px auto;
+      margin: 1em auto 5px auto;
       padding: 5px;
       border: 1px solid lime;
-      background: linear-gradient(to right, lime, yellow);
+      background: linear-gradient(45deg, #0ff, #f0f);
       color: black;
-      font-family: monospace;
+      font-family: 'Orbitron', monospace;
       cursor: pointer;
       outline: none;
       border-radius: 10px;
+      box-shadow: 0 0 8px #f0f, 0 0 16px #0ff;
     }
     /* Shrink only the logo ASCII block */
     pre.logo-art {
       display: inline-block;
-      margin: 2px auto 0;
+      margin: 0 auto;
+      margin-bottom: 10px;
     }
     /* Gradient styling for ASCII art below the button */
     pre.ascii-art {
+      margin: 0;
+      padding: 5px;
       background: linear-gradient(to right, blue, purple, pink, lime, green);
       -webkit-background-clip: text;
       -webkit-text-fill-color: transparent;
       font-family: monospace;
-      padding: 10px;
       font-size: 90%;
     }
     h1 {
-      background: linear-gradient(to right, lime, yellow);
-      -webkit-background-clip: text;
-      -webkit-text-fill-color: transparent;
-      margin: 2px 0;
+      font-size: 18px;
+      font-family: 'Orbitron', monospace;
+      margin: 1em 0 4px 0;
+    }
+    /* Style TAK settings inputs and buttons to match main UI */
+    #portTakSettings input[type="text"],
+    #portTakSettings input[type="password"] {
+      background-color: #222;
+      color: #87CEEB;
+      border: 1px solid #FF00FF;
+      padding: 4px;
+      font-size: 1em;
+      outline: none;
+    }
+    #portTakSettings input[type="checkbox"] {
+      transform: scale(1.2);
+    }
+    #portTakSettings button {
+      margin-top: 4px;
+      padding: 3px;
+      font-size: 0.8em;
+      border: none;
+      background-color: #333;
+      color: lime;
+      cursor: pointer;
+      width: auto;
+      background: linear-gradient(45deg, #0ff, #f0f);
+      color: #000;
+      border-radius: 10px;
+      font-family: 'Orbitron', monospace;
+    }
+    #portTakSettings {
+      margin-top: 5px;
+      text-align: center;
+    }
+    #portTakP12Filename {
+      color: #FF00FF;
+      font-family: monospace;
+      margin-top: 4px;
+      text-align: center;
+    }
+    /* Cyberpunk toggle styling */
+    .switch { position: relative; display: inline-block; vertical-align: middle; width: 40px; height: 20px; }
+    .switch input { opacity: 0; width: 0; height: 0; }
+    .slider { position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0; background-color: #555; transition: .4s; border-radius: 20px; }
+    .slider:before {
+        position: absolute;
+        content: "";
+        height: 16px;
+        width: 16px;
+        left: 2px;
+        top: 50%;
+        background-color: lime;
+        border: 1px solid #9B30FF;
+        transition: .4s;
+        border-radius: 50%;
+        transform: translateY(-50%);
+    }
+    .switch input:checked + .slider { background-color: lime; }
+    .switch input:checked + .slider:before {
+        transform: translateX(20px) translateY(-50%);
+        border: 1px solid #9B30FF;
     }
   </style>
 </head>
@@ -507,7 +945,27 @@ PORT_SELECTION_PAGE = '''
         <option value="{{ port.device }}">{{ port.device }} - {{ port.description }}</option>
       {% endfor %}
     </select><br>
-    <button type="submit">Select Ports</button>
+    <div id="portTakModeContainer" class="tooltip-container" style="text-align:center; margin:5px 0;">
+        <label style="font-size:18px; font-family:'Orbitron', monospace; display:inline-block; margin-right:10px; vertical-align:middle;">Enable TAK Mode</label>
+        <label class="switch" style="vertical-align:middle;">
+          <input type="checkbox" id="portTakModeSwitch">
+          <span class="slider"></span>
+        </label>
+        <div class="tak-tooltip">Please note - if mesh-mapper is not able to connect to your TAK server, you will need to disable TAK Mode in order to access the mapping screen.</div>
+    </div>
+    <div id="portTakSettings" style="display:none; text-align:center;">
+      <label style="display:inline-block; margin-right:10px; margin-bottom:5px;">TAK IP: <input type="text" id="portTakIP" value="127.0.0.1" style="width:100px;"></label>
+      <label style="display:inline-block; margin-bottom:5px;">Port: <input type="text" id="portTakPort" value="8444" style="width:60px;"></label><br>
+      <div style="margin-bottom:5px; text-align:center;">
+        <button id="portTakP12Button">Upload P12</button>
+        <div id="portTakP12Filename" style="color:lime; border:1px solid #FF00FF; border-radius:4px; padding:2px; margin:4px auto; display:inline-block;"></div>
+        <input type="file" id="portTakP12" accept=".p12" style="display:none;" />
+        <input type="password" id="portTakP12Pass" placeholder="Password" style="width:80px;" />
+        <label style="display:inline-block; margin-left:10px;">Skip Verify: <input type="checkbox" id="portTakSkipVerify" checked></label>
+        <button id="portApplyTakSettings" style="display:inline-block; margin-left:10px;">Update TAK</button>
+      </div>
+    </div>
+        <button id="beginMapping" type="submit">Begin Mapping</button>
   </form>
   <pre class="ascii-art">{{ bottom_ascii }}</pre>
   <script>
@@ -543,6 +1001,102 @@ PORT_SELECTION_PAGE = '''
     window.onload = function() {
       refreshPortOptions();
     }
+    // TAK P12 upload controls
+    document.getElementById('portTakP12Button').addEventListener('click', function(e) {
+      e.preventDefault();
+      document.getElementById('portTakP12').click();
+    });
+    document.getElementById('portTakP12').addEventListener('change', function() {
+      const fileInput = document.getElementById('portTakP12');
+      const filenameDiv = document.getElementById('portTakP12Filename');
+      filenameDiv.textContent = fileInput.files.length ? fileInput.files[0].name : '';
+    });
+
+    document.getElementById('portApplyTakSettings').addEventListener('click', function(e) {
+      e.preventDefault();
+      const enabled = document.getElementById('portTakModeSwitch').checked;
+      const endpoint = `${document.getElementById('portTakIP').value.trim()}:${document.getElementById('portTakPort').value.trim()}`;
+      const skipVerify = document.getElementById('portTakSkipVerify').checked;
+      const p12Input = document.getElementById('portTakP12');
+      const passwordInput = document.getElementById('portTakP12Pass');
+      if (p12Input.files.length) {
+        const formData = new FormData();
+        formData.append('p12', p12Input.files[0]);
+        formData.append('password', passwordInput.value);
+        fetch('/api/upload_tak_certs', { method: 'POST', body: formData })
+          .then(res => {
+            if (!res.ok) throw new Error('Failed to upload P12');
+            return res.json();
+          })
+          .then(function(uploadData) {
+            document.getElementById('portTakP12Filename').textContent = uploadData.p12Filename || '';
+            return fetch('/api/tak_settings', {
+              method: 'POST',
+              headers: {'Content-Type': 'application/json'},
+              body: JSON.stringify({ enabled, endpoint, skipVerify })
+            });
+          })
+          .then(res => res.json())
+          .then(function(data) {
+            // Optionally update UI fields here if needed
+          })
+          .catch(function(err) {
+            console.error('Error uploading TAK P12 or updating settings:', err);
+          });
+      } else {
+        fetch('/api/tak_settings', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({ enabled, endpoint, skipVerify })
+        })
+        .then(res => res.json())
+        .then(function(data) {
+          // Optionally update UI fields here if needed
+        })
+        .catch(function(err) {
+          console.error('Error updating TAK settings:', err);
+        });
+      }
+    });
+    // Show/hide TAK settings when portTakModeSwitch toggled
+    const portTakSettings = document.getElementById('portTakSettings');
+    const portTakSwitch = document.getElementById('portTakModeSwitch');
+    portTakSettings.style.display = portTakSwitch.checked ? 'block' : 'none';
+    const modeContainer = document.getElementById('portTakModeContainer');
+    if (portTakSwitch.checked) { modeContainer.classList.add('expanded'); } else { modeContainer.classList.remove('expanded'); }
+    portTakSwitch.addEventListener('change', () => {
+      portTakSettings.style.display = portTakSwitch.checked ? 'block' : 'none';
+      const modeContainer = document.getElementById('portTakModeContainer');
+      if (portTakSwitch.checked) { modeContainer.classList.add('expanded'); } else { modeContainer.classList.remove('expanded'); }
+    });
+
+    // Auto-update backend TAK setting when toggled on port selection screen
+    portTakSwitch.addEventListener('change', () => {
+      fetch('/api/tak_settings', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ enabled: portTakSwitch.checked })
+      })
+      .then(res => res.json())
+      .catch(err => console.error('Error toggling TAK settings:', err));
+    });
+
+
+    // Load persisted TAK settings on page load
+    fetch('/api/tak_settings')
+      .then(res => res.json())
+      .then(data => {
+        portTakSwitch.checked = data.enabled;
+        const [ip, port] = data.endpoint.split(':');
+        document.getElementById('portTakIP').value = ip;
+        document.getElementById('portTakPort').value = port;
+        document.getElementById('portTakSkipVerify').checked = data.skipVerify;
+        document.getElementById('portTakP12Filename').textContent = data.p12Filename || '';
+        document.getElementById('portTakP12Pass').value = data.password || '';
+        portTakSettings.style.display = data.enabled ? 'block' : 'none';
+        repositionBeginBtn();
+      })
+      .catch(err => console.error('Error loading TAK settings:', err));
   </script>
 </body>
 </html>
@@ -557,6 +1111,7 @@ HTML_PAGE = '''
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Mesh Mapper</title>
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin=""/>
+  <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700&display=swap" rel="stylesheet">
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
   <style>
     /* Hide tile seams on all map layers */
@@ -592,7 +1147,12 @@ HTML_PAGE = '''
       transform: translateX(20px) translateY(-50%);
       border: 1px solid #9B30FF;
     }
-    body, html { margin: 0; padding: 0; background-color: black; }
+    body, html {
+      margin: 0;
+      padding: 0;
+      background-color: #0a001f;
+      font-family: 'Orbitron', monospace;
+    }
     #map { height: 100vh; }
     /* Layer control styling (bottom left) reduced by 30% */
     #layerControl {
@@ -762,8 +1322,24 @@ HTML_PAGE = '''
       white-space: normal;
     }
     .leaflet-popup-tip { background: lime; }
-    button { margin-top: 4px; padding: 3px; font-size: 0.8em; border: none; background-color: #333; color: lime; cursor: pointer; width: auto; }
-    select { background-color: #333; color: lime; border: none; padding: 3px; }
+    button {
+      margin-top: 4px;
+      padding: 3px;
+      font-size: 0.8em;
+      border: none;
+      background-color: #333;
+      color: lime;
+      cursor: pointer;
+      width: auto;
+      background: linear-gradient(45deg, #0ff, #f0f);
+      color: #000;
+    }
+    select {
+      background-color: #333;
+      color: lime;
+      border: none;
+      padding: 3px;
+    }
     .leaflet-control-zoom-in, .leaflet-control-zoom-out {
       background: rgba(0,0,0,0.8);
       color: lime;
@@ -1034,7 +1610,14 @@ HTML_PAGE = '''
       padding: 4px 6px;
       margin: 2px 4px 2px 0;
     }
-  </style>
+</style>
+    <style>
+      /* Remove glow and shadows on text boxes, selects, and buttons */
+      input, select, button {
+        text-shadow: none !important;
+        box-shadow: none !important;
+      }
+    </style>
 </head>
 <body>
 <div id="map"></div>
@@ -1077,65 +1660,26 @@ HTML_PAGE = '''
         <button id="downloadAliases">Aliases</button>
       </div>
     </div>
-    <div style="margin-top:8px; display:flex; align-items:center; justify-content:center; height:20px;">
-      <label style="color:lime; font-family:monospace; margin-right:8px;">Node Mode</label>
+    <!-- TAK Mode block -->
+    <div style="margin-top:8px; display:flex; flex-direction:column; align-items:center;">
+      <label style="color:lime; font-family:monospace; margin-bottom:4px;">TAK Mode</label>
+      <label class="switch">
+        <input type="checkbox" id="takModeMainSwitch">
+        <span class="slider"></span>
+      </label>
+      <div style="color:#FF00FF; font-family:monospace; font-size:0.75em; text-align:center; margin-top:4px;">
+        Sends CoT messages to TAK server
+      </div>
+    </div>
+    <!-- Node Mode block -->
+    <div style="margin-top:8px; display:flex; flex-direction:column; align-items:center;">
+      <label style="color:lime; font-family:monospace; margin-bottom:4px;">Node Mode</label>
       <label class="switch">
         <input type="checkbox" id="nodeModeMainSwitch">
         <span class="slider"></span>
       </label>
-    </div>
-    <div style="color:#FF00FF; font-family:monospace; font-size:0.75em; white-space:normal; line-height:1.2; margin-top:4px; text-align:center;">
-      Polls detections every second instead of every 200 ms to reduce CPU/battery use and optimizes API for Node Mode.
-    </div>
-    <div id="zmqSection" style="margin-top:8px; text-align:center;">
-      <div style="margin-top:8px; display:flex; align-items:center; justify-content:center; height:20px;">
-        <label style="color:lime; font-family:monospace; margin-right:8px;">ZMQ Mode</label>
-        <label class="switch">
-          <input type="checkbox" id="zmqModeSwitch">
-          <span class="slider"></span>
-        </label>
-      </div>
-      <div style="margin-top:5px;">
-        <div style="display:flex; justify-content:center; align-items:center; margin-top:5px;">
-          <input type="text" id="zmqIP" placeholder="127.0.0.1" style="background-color:#222;color:#FF00FF;border:1px solid #FF00FF;padding:4px;margin-right:5px;width:auto;">
-          <span style="color:lime;">:</span>
-          <input type="text" id="zmqPort" placeholder="4224" style="background-color:#222;color:#FF00FF;border:1px solid #FF00FF;padding:4px;margin-left:5px;width:auto;">
-        </div>
-        <button id="applyZmqSettings" style="margin-top:5px;padding:5px;border:1px solid lime;background:#333;color:lime;font-family:monospace;cursor:pointer;border-radius:5px;">Update ZMQ</button>
-      </div>
-      <div style="color:#FF00FF;font-family:monospace;font-size:0.75em;white-space:normal;line-height:1.2;margin-top:4px;text-align:center;">
-        Connect to ZMQ decoder via direct IP connection
-      </div>
-    </div>
-    <!-- TAK Mode Section -->
-    <div id="takSection" style="margin-top:8px; text-align:center;">
-      <div style="margin-top:8px; display:flex; align-items:center; justify-content:center; height:20px;">
-        <label style="color:lime; font-family:monospace; margin-right:8px;">TAK Mode</label>
-        <label class="switch">
-          <input type="checkbox" id="takModeSwitch">
-          <span class="slider"></span>
-        </label>
-      </div>
-      <div id="takSettings" style="margin-top:5px; text-align:center;">
-        <div style="display:flex; justify-content:center; align-items:center; margin-top:5px;">
-          <input type="text" id="takIP" value="127.0.0.1" style="background-color:#222;color:#FF00FF;border:1px solid #FF00FF;padding:4px;margin-right:5px;width:auto;">
-          <span style="color:lime;">:</span>
-          <input type="text" id="takPort" value="8087" style="background-color:#222;color:#FF00FF;border:1px solid #FF00FF;padding:4px;margin-left:5px;width:auto;">
-        </div>
-        <div style="margin-top:5px; display:flex; align-items:center; justify-content:center;">
-          <label for="takSkipVerify" style="color:lime; font-family:monospace; margin-right:8px;">Skip Verify</label>
-          <input type="checkbox" id="takSkipVerify" style="transform: scale(1.2);"/>
-        </div>
-        <div style="margin-top:5px; display:flex; align-items:center; justify-content:center;">
-          <button id="takP12Button" style="padding:5px;border:1px solid lime;background:#333;color:lime;font-family:monospace;cursor:pointer;border-radius:5px;">
-            Upload P12
-          </button>
-          <input type="file" id="takP12" accept=".p12" style="display:none;"/>
-          <input type="password" id="takP12Pass" placeholder="Password" style="margin-left:8px;background-color:#222;color:#87CEEB;border:1px solid #FF00FF;padding:4px;width:auto;">
-        </div>
-        <div id="takP12Filename" style="color:#FF00FF;font-family:monospace;margin-top:4px;text-align:center;"></div>
-        <button id="applyTakSettings" style="margin-top:5px;padding:5px;border:1px solid lime;background:#333;color:lime;font-family:monospace;cursor:pointer;border-radius:5px;">Update TAK</button>
-        <div style="height:8px;"></div>
+      <div style="color:#FF00FF; font-family:monospace; font-size:0.75em; text-align:center; margin-top:4px;">
+        Polls detections every second instead of every 100 ms to reduce CPU/battery use in Node Mode
       </div>
     </div>
   </div>
@@ -1186,123 +1730,33 @@ document.addEventListener('DOMContentLoaded', () => {
       const enabled = mainSwitch.checked;
       localStorage.setItem('nodeMode', enabled);
       clearInterval(updateDataInterval);
-      updateDataInterval = setInterval(updateData, enabled ? 1000 : 200);
+      updateDataInterval = setInterval(updateData, enabled ? 1000 : 100);
       // Sync popup toggle if open
       const popupSwitch = document.getElementById('nodeModePopupSwitch');
       if (popupSwitch) popupSwitch.checked = enabled;
     };
   }
+    // Sync TAK Mode toggle with backend setting
+    const takSwitch = document.getElementById('takModeMainSwitch');
+    if (takSwitch) {
+        // Load current backend TAK enabled state
+        fetch('/api/tak_settings')
+          .then(res => res.json())
+          .then(data => { takSwitch.checked = data.enabled; })
+          .catch(err => console.error('Error loading TAK settings:', err));
+        takSwitch.onchange = () => {
+          fetch('/api/tak_settings', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ enabled: takSwitch.checked })
+          })
+          .then(res => res.json())
+          .catch(err => console.error('Error updating TAK settings:', err));
+        };
+    }
   // Start polling based on current setting
   updateData();
-  updateDataInterval = setInterval(updateData, mainSwitch && mainSwitch.checked ? 1000 : 200);
-
-  // --- ZMQ & TAK Settings: Load server settings first, then apply localStorage overrides ---
-  if (localStorage.getItem('takEnabled') === null) { localStorage.setItem('takEnabled','false'); }
-  const takSwitch      = document.getElementById('takModeSwitch');
-  const takIP          = document.getElementById('takIP');
-  const takPort        = document.getElementById('takPort');
-  const takSkipVerify  = document.getElementById('takSkipVerify');
-  const takP12         = document.getElementById('takP12');
-  const takP12Button   = document.getElementById('takP12Button');
-  const takP12Filename = document.getElementById('takP12Filename');
-  const applyTakSettings = document.getElementById('applyTakSettings');
-  takP12Button.addEventListener('click', () => takP12.click());
-  takP12.addEventListener('change', () => {
-    takP12Filename.textContent = takP12.files.length ? takP12.files[0].name : '';
-  });
-
-  if (localStorage.getItem('zmqEnabled') === null) { localStorage.setItem('zmqEnabled','false'); }
-  const zmqSwitch = document.getElementById('zmqModeSwitch');
-  const zmqIP = document.getElementById('zmqIP');
-  const zmqPort = document.getElementById('zmqPort');
-  const applyZmqSettings = document.getElementById('applyZmqSettings');
-  // Load server settings early
-  fetch('/api/zmq_settings')
-    .then(res => res.json())
-    .then(data => {
-      // zmqSwitch.checked = data.enabled;
-      try {
-        const url = new URL(data.endpoint);
-        zmqIP.value = url.hostname;
-        zmqPort.value = url.port;
-      } catch (e) {}
-    })
-    .catch(err => console.error('Error fetching ZMQ settings:', err));
-  fetch('/api/tak_settings')
-    .then(res => res.json())
-    .then(data => {
-      // takSwitch.checked = data.enabled;
-      const [h, p] = data.endpoint.split(':');
-      takIP.value = h;
-      takPort.value = p;
-      // takSkipVerify.checked = data.skipVerify;
-    })
-    .catch(err => console.error('Error fetching TAK settings:', err));
-  // Then apply localStorage overrides
-  // ZMQ
-  if (zmqSwitch && zmqIP && zmqPort && applyZmqSettings) {
-    zmqSwitch.checked = (localStorage.getItem('zmqEnabled') === 'true');
-    const storedEndpoint = localStorage.getItem('zmqEndpoint') || 'tcp://127.0.0.1:4224';
-    try {
-      const url = new URL(storedEndpoint);
-      zmqIP.value = url.hostname;
-      zmqPort.value = url.port;
-    } catch (e) {
-      zmqIP.value = '127.0.0.1';
-      zmqPort.value = '4224';
-    }
-    applyZmqSettings.addEventListener('click', function() {
-      this.style.backgroundColor = 'purple';
-      setTimeout(() => { this.style.backgroundColor = '#333'; }, 300);
-      const endpoint = `tcp://${zmqIP.value.trim()}:${zmqPort.value.trim()}`;
-      localStorage.setItem('zmqEnabled', zmqSwitch.checked);
-      localStorage.setItem('zmqEndpoint', endpoint);
-      fetch('/api/zmq_settings', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({enabled: zmqSwitch.checked, endpoint: endpoint})
-      }).catch(err => console.error('Error applying ZMQ settings:', err));
-    });
-    // Persist ZMQ toggle state on change so reload reflects current setting
-    zmqSwitch.onchange = () => { localStorage.setItem('zmqEnabled', zmqSwitch.checked); };
-  }
-  // TAK
-  takSwitch.checked = (localStorage.getItem('takEnabled') === 'true');
-  const savedEndpoint = localStorage.getItem('takEndpoint');
-  if (savedEndpoint) {
-    const [h, p] = savedEndpoint.split(':');
-    takIP.value = h; takPort.value = p;
-  }
-  takSkipVerify.checked = (localStorage.getItem('takSkipVerify') === 'true');
-  takIP.addEventListener('change', () => {
-    localStorage.setItem('takEndpoint', `${takIP.value.trim()}:${takPort.value.trim()}`);
-  });
-  takPort.addEventListener('change', () => {
-    localStorage.setItem('takEndpoint', `${takIP.value.trim()}:${takPort.value.trim()}`);
-  });
-  takSkipVerify.addEventListener('change', () => {
-    localStorage.setItem('takSkipVerify', takSkipVerify.checked);
-  });
-  takSwitch.onchange = () => {
-    localStorage.setItem('takEnabled', takSwitch.checked);
-  };
-  applyTakSettings.addEventListener('click', () => {
-    applyTakSettings.style.backgroundColor = 'purple';
-    setTimeout(() => { applyTakSettings.style.backgroundColor = '#333'; }, 300);
-    const endpoint = `${takIP.value.trim()}:${takPort.value.trim()}`;
-    localStorage.setItem('takEndpoint', endpoint);
-    localStorage.setItem('takSkipVerify', takSkipVerify.checked);
-    const formData = new FormData();
-    if (takP12.files.length) formData.append('p12', takP12.files[0]);
-    formData.append('password', takP12Pass.value);
-    fetch('/api/upload_tak_certs', { method: 'POST', body: formData })
-      .catch(err => console.error('Error uploading TAK certs:', err));
-    fetch('/api/tak_settings', {
-      method: 'POST',
-      headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({enabled: takSwitch.checked, endpoint, skipVerify: takSkipVerify.checked})
-    }).catch(err => console.error('Error updating TAK settings:', err));
-  });
+  updateDataInterval = setInterval(updateData, mainSwitch && mainSwitch.checked ? 1000 : 100);
 
   // Staleout slider initialization
   const staleoutSlider = document.getElementById('staleoutSlider');
@@ -2060,7 +2514,7 @@ function updateComboList(data) {
 
 async function updateData() {
   try {
-    const response = await fetch('/api/detections');
+    const response = await ffetch(window.location.origin + '/api/detections')
     const data = await response.json();
     window.tracked_pairs = data;
     // Persist current detection data to localStorage so that markers & paths remain on reload.
@@ -2216,7 +2670,7 @@ function getDynamicSize() {
 // Updated function: now updates all selected USB port statuses.
 async function updateSerialStatus() {
   try {
-    const response = await fetch('/api/serial_status');
+    const response = await fetch(window.location.origin + '/api/serial_status')
     const data = await response.json();
     const statusDiv = document.getElementById('serialStatus');
     statusDiv.innerHTML = "";
@@ -2257,7 +2711,7 @@ document.getElementById("filterToggle").addEventListener("click", function() {
 
 async function restorePaths() {
   try {
-    const response = await fetch('/api/paths');
+    const response = await fetch(window.location.origin + '/api/paths')
     const data = await response.json();
     for (const mac in data.dronePaths) {
       let isActive = false;
@@ -2375,6 +2829,7 @@ def select_ports_get():
     ports = list(serial.tools.list_ports.comports())
     return render_template_string(PORT_SELECTION_PAGE, ports=ports, logo_ascii=LOGO_ASCII, bottom_ascii=BOTTOM_ASCII)
 
+
 @app.route('/select_ports', methods=['POST'])
 def select_ports_post():
     global SELECTED_PORTS
@@ -2388,11 +2843,50 @@ def select_ports_post():
         SELECTED_PORTS['port2'] = port2
     if port3:
         SELECTED_PORTS['port3'] = port3
-    # Start threads for each selected port.
-    for key, port in SELECTED_PORTS.items():
-        serial_connected_status[port] = False  # initialize status
-        start_serial_thread(port)
-    return redirect(url_for('index'))
+        # Initialize TAK/TLS socket now that mapping has started
+        if TAK_SETTINGS.get('enabled', False):
+            init_tak_client()
+            # Initialize TAK/TLS socket now that mapping has actually started
+    if TAK_SETTINGS.get('enabled', False):
+        init_tak_client()
+
+    # Pre-calculate redirect response
+    response = redirect(url_for('index'))
+
+    # Background initialization: TAK client & serial-reader threads
+    def init_mapping():
+        global _tak_client, _cot_messenger
+        # 1) TAK setup (only if enabled)
+        if TAK_SETTINGS.get('enabled', False):
+            host, port_str = TAK_SETTINGS['endpoint'].split(':')
+            # Load stored certificate and password
+            p12_path = os.path.join(BASE_DIR, 'tak.p12')
+            with open(os.path.join(BASE_DIR, 'tak_password.txt'), 'r') as f:
+                p12_password = f.read().strip()
+            # Initialize TLS socket and connect
+            tls_sock = init_tak_client(
+                p12_path,
+                p12_password,
+                host,
+                int(port_str),
+                skip_verify=TAK_SETTINGS.get('skipVerify', True)
+            )
+            _tak_client = tls_sock
+            _cot_messenger = CotMessenger(tak_client=_tak_client)
+        else:
+            _tak_client = None
+            _cot_messenger = None
+
+        # 2) Start serial-reader threads
+        for port in SELECTED_PORTS.values():
+            serial_connected_status[port] = False
+            start_serial_thread(port)
+
+    # Fire & forget initialization
+    threading.Thread(target=init_mapping, daemon=True).start()
+
+    # Return the redirect immediately
+    return response
 
 
 # ----------------------
@@ -2650,6 +3144,30 @@ import time
 from datetime import datetime
 from flask import Flask, request, jsonify
 
+# --- TAK TLS/PKCS#12 Helper ---
+import ssl
+
+from io import BytesIO
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+def init_tak_client(p12_path, p12_password, host, port, skip_verify=False):
+    # Load PKCS#12 bundle
+    with open(p12_path, "rb") as f:
+        p12 = crypto.load_pkcs12(f.read(), p12_password.encode())
+    cert_pem = crypto.dump_certificate(crypto.FILETYPE_PEM, p12.get_certificate())
+    key_pem = crypto.dump_privatekey(crypto.FILETYPE_PEM, p12.get_privatekey())
+    # Build SSL context
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    if skip_verify:
+        context.check_hostname = False
+        context.verify_mode = ssl.CERT_NONE
+    context.load_cert_chain(certfile=BytesIO(cert_pem), keyfile=BytesIO(key_pem))
+    # Create, wrap, and connect socket
+    raw_sock = socket.create_connection((host, port))
+    tls_sock = context.wrap_socket(raw_sock, server_hostname=host)
+    return tls_sock
+
 # --- ZMQ & TAK Settings (persist in memory for now) ---
 ZMQ_SETTINGS = {'enabled': False, 'endpoint': 'tcp://127.0.0.1:4224'}
 TAK_SETTINGS = {'enabled': False, 'endpoint': '127.0.0.1:8087', 'skipVerify': False}
@@ -2800,6 +3318,10 @@ HTML_TEMPLATE = '''
     }
     input[type="text"], input[type="password"] { background-color: #222; color: #FF00FF; border: 1px solid #FF00FF; padding: 4px; }
     button { padding: 5px; border: 1px solid lime; background: #333; color: lime; border-radius: 5px; font-family: monospace; }
+    input, select, button {
+      text-shadow: none !important;
+      box-shadow: none !important;
+    }
   </style>
 </head>
 <body>
