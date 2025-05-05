@@ -1472,29 +1472,30 @@ HTML_PAGE = '''
     .leaflet-popup-content-wrapper input:not(#aliasInput) {
       caret-color: transparent;
     }
-    /* Popup button and input sizing */
+    /* Popup button styling */
     .leaflet-popup-content-wrapper button {
       display: inline-block;
-      margin: 4px 8px 4px 0;
+      margin: 2px 4px 2px 0;
       padding: 4px 6px;
       font-size: 0.9em;
       width: auto;
-      background-color: #333 !important;
-      border: 1px solid lime !important;
-      color: lime !important;
-      box-shadow: none !important;
-      text-shadow: none !important;
+      background-color: #333;
+      border: 1px solid lime;
+      color: lime;
+      box-shadow: none;
+      text-shadow: none;
     }
 
-    /* Outline green when "locked" inline style present */
+    /* Locked button styling */
     .leaflet-popup-content-wrapper button[style*="background-color: green"] {
-      border-color: green !important;
-      color: green !important;
+      background-color: green;
+      color: black;
+      border-color: green;
     }
 
-    /* Subtle hover effect */
+    /* Hover effect */
     .leaflet-popup-content-wrapper button:hover {
-      background-color: rgba(255,255,255,0.1) !important;
+      background-color: rgba(255,255,255,0.1);
     }
     .leaflet-popup-content-wrapper input[type="text"],
     .leaflet-popup-content-wrapper input[type="range"] {
@@ -1710,10 +1711,9 @@ HTML_PAGE = '''
     .leaflet-popup-content-wrapper #lock-observer,
     .leaflet-popup-content-wrapper #unlock-observer {
       display: inline-block;
-      margin: 4px 8px 4px 0;
-      padding: 4px 6px;
       font-size: 0.9em;
-      width: auto;
+      padding: 4px 6px;
+      margin: 2px 4px 2px 0;
     }
 </style>
     <style>
@@ -2030,12 +2030,12 @@ function generateObserverPopup() {
        <option value="👁️" ${storedObserverEmoji === "👁️" ? "selected" : ""}>👁️</option>
     </select><br>
     <div style="display:flex; gap:4px; justify-content:center; margin-top:4px;">
-      <button id="lock-observer" onclick="lockObserver()" style="background-color: ${observerLocked ? 'green' : ''};">
-        ${observerLocked ? 'Locked on Observer' : 'Lock on Observer'}
-      </button>
-      <button id="unlock-observer" onclick="unlockObserver()" style="background-color: ${observerLocked ? '' : 'green'};">
-        ${observerLocked ? 'Unlock Observer' : 'Unlocked Observer'}
-      </button>
+        <button id="lock-observer" onclick="lockObserver()" style="background-color: ${observerLocked ? 'green' : ''};">
+          ${observerLocked ? 'Locked on Observer' : 'Lock on Observer'}
+        </button>
+        <button id="unlock-observer" onclick="unlockObserver()" style="background-color: ${observerLocked ? '' : 'green'};">
+          ${observerLocked ? 'Unlock Observer' : 'Unlocked Observer'}
+        </button>
     </div>
   </div>
   `;
@@ -2119,31 +2119,42 @@ function generatePopupContent(detection, markerType) {
               <input type="text" id="aliasInput" onclick="event.stopPropagation();" ontouchstart="event.stopPropagation();" 
                      style="background-color: #222; color: #87CEEB; border: 1px solid #FF00FF;" 
                      value="${aliases[detection.mac] ? aliases[detection.mac] : ''}"><br>
-              <button onclick="saveAlias('${detection.mac}')">Save Alias</button>
-              <button onclick="clearAlias('${detection.mac}')">Clear Alias</button><br>`;
+              <div style="display:flex; align-items:center; justify-content:space-between; width:100%; margin-top:4px;">
+                <button
+                  onclick="saveAlias('${detection.mac}'); this.style.backgroundColor='purple'; setTimeout(()=>this.style.backgroundColor='#333',300);"
+                  style="flex:1; margin:0 2px; padding:4px 0;"
+                >Save Alias</button>
+                <button
+                  onclick="clearAlias('${detection.mac}'); this.style.backgroundColor='purple'; setTimeout(()=>this.style.backgroundColor='#333',300);"
+                  style="flex:1; margin:0 2px; padding:4px 0;"
+                >Clear Alias</button>
+              </div>`;
   
   content += `<div style="border-top:2px solid lime; margin:10px 0;"></div>`;
   
-  var isDroneLocked = (followLock.enabled && followLock.type === 'drone' && followLock.id === detection.mac);
-  var droneLockButton = `<button id="lock-drone-${detection.mac}" onclick="lockMarker('drone', '${detection.mac}')" 
-                      style="background-color: ${isDroneLocked ? 'green' : ''};">
-                      ${isDroneLocked ? 'Locked on Drone' : 'Lock on Drone'}
-                    </button>`;
-  var droneUnlockButton = `<button id="unlock-drone-${detection.mac}" onclick="unlockMarker('drone', '${detection.mac}')" 
-                      style="background-color: ${isDroneLocked ? '' : 'green'};">
-                      ${isDroneLocked ? 'Unlock Drone' : 'Unlocked Drone'}
-                    </button>`;
-  var isPilotLocked = (followLock.enabled && followLock.type === 'pilot' && followLock.id === detection.mac);
-  var pilotLockButton = `<button id="lock-pilot-${detection.mac}" onclick="lockMarker('pilot', '${detection.mac}')" 
-                      style="background-color: ${isPilotLocked ? 'green' : ''};">
-                      ${isPilotLocked ? 'Locked on Pilot' : 'Lock on Pilot'}
-                    </button>`;
-  var pilotUnlockButton = `<button id="unlock-pilot-${detection.mac}" onclick="unlockMarker('pilot', '${detection.mac}')" 
-                      style="background-color: ${isPilotLocked ? '' : 'green'};">
-                      ${isPilotLocked ? 'Unlock Pilot' : 'Unlocked Pilot'}
-                    </button>`;
-  content += `${droneLockButton} ${droneUnlockButton} <br>
-                ${pilotLockButton} ${pilotUnlockButton}`;
+    var isDroneLocked = (followLock.enabled && followLock.type === 'drone' && followLock.id === detection.mac);
+    var droneLockButton = `<button id="lock-drone-${detection.mac}" onclick="lockMarker('drone', '${detection.mac}')" style="flex:${isDroneLocked ? 1.2 : 0.8}; margin:0 2px; padding:4px 0; background-color: ${isDroneLocked ? 'green' : ''};">
+      ${isDroneLocked ? 'Locked on Drone' : 'Lock on Drone'}
+    </button>`;
+    var droneUnlockButton = `<button id="unlock-drone-${detection.mac}" onclick="unlockMarker('drone', '${detection.mac}')" style="flex:${isDroneLocked ? 0.8 : 1.2}; margin:0 2px; padding:4px 0; background-color: ${isDroneLocked ? '' : 'green'};">
+      ${isDroneLocked ? 'Unlock Drone' : 'Unlocked Drone'}
+    </button>`;
+    var isPilotLocked = (followLock.enabled && followLock.type === 'pilot' && followLock.id === detection.mac);
+    var pilotLockButton = `<button id="lock-pilot-${detection.mac}" onclick="lockMarker('pilot', '${detection.mac}')" style="flex:${isPilotLocked ? 1.2 : 0.8}; margin:0 2px; padding:4px 0; background-color: ${isPilotLocked ? 'green' : ''};">
+      ${isPilotLocked ? 'Locked on Pilot' : 'Lock on Pilot'}
+    </button>`;
+    var pilotUnlockButton = `<button id="unlock-pilot-${detection.mac}" onclick="unlockMarker('pilot', '${detection.mac}')" style="flex:${isPilotLocked ? 0.8 : 1.2}; margin:0 2px; padding:4px 0; background-color: ${isPilotLocked ? '' : 'green'};">
+      ${isPilotLocked ? 'Unlock Pilot' : 'Unlocked Pilot'}
+    </button>`;
+    content += `
+      <div style="display:flex; align-items:center; justify-content:space-between; width:100%; margin-top:4px;">
+        ${droneLockButton}
+        ${droneUnlockButton}
+      </div>
+      <div style="display:flex; align-items:center; justify-content:space-between; width:100%; margin-top:4px;">
+        ${pilotLockButton}
+        ${pilotUnlockButton}
+      </div>`;
   
   let defaultHue = colorOverrides[detection.mac] !== undefined ? colorOverrides[detection.mac] : (function(){
       let hash = 0;
