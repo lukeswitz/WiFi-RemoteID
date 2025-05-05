@@ -194,6 +194,44 @@ class TAKUDPClient:
         self.sock.close()
 
 
+# --- Plain TCP (no TLS) client for CoT ---
+class TAKPlainClient:
+    """TCP client for CoT messaging without TLS."""
+    def __init__(self, host: str, port: int):
+        self.host = host
+        self.port = port
+        self.sock = None
+
+    def connect(self):
+        try:
+            self.sock = socket.create_connection((self.host, self.port), timeout=10)
+            logging.info("Connected to ATAK client via plain TCP")
+        except Exception as e:
+            logging.error(f"TAKPlainClient connect error: {e}")
+            self.sock = None
+
+    def send(self, cot_xml: bytes):
+        if not self.sock:
+            self.connect()
+        if not self.sock:
+            logging.error("TAKPlainClient: socket not connected, dropping CoT")
+            return
+        try:
+            self.sock.sendall(cot_xml + b'\n')
+            logging.info(f"Sent CoT message via plain TCP: {cot_xml}")
+        except Exception as e:
+            logging.error(f"TAKPlainClient send error: {e}")
+            try: self.sock.close()
+            except: pass
+            self.sock = None
+
+    def close(self):
+        if self.sock:
+            try: self.sock.close()
+            except: pass
+            self.sock = None
+
+
 
 class CotMessenger:
     """
@@ -291,8 +329,13 @@ def init_tak_client():
             threading.Thread(target=_tak_client.run_connect_loop, daemon=True).start()
             _cot_messenger = CotMessenger(tak_client=_tak_client)
         else:
-            tak_udp = TAKUDPClient(host, port)
-            _cot_messenger = CotMessenger(tak_client=None, tak_udp_client=tak_udp)
+            # Plain TCP to ATAK client on port 8089
+            if port == 8089:
+                plain_client = TAKPlainClient(host, port)
+                _cot_messenger = CotMessenger(tak_client=plain_client)
+            else:
+                tak_udp = TAKUDPClient(host, port)
+                _cot_messenger = CotMessenger(tak_udp_client=tak_udp)
     else:
         _cot_messenger = CotMessenger(tak_client=None)
 
