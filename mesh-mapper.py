@@ -2011,6 +2011,43 @@ function safeSetView(latlng, zoom=18) {
   map.setView(latlng, newZoom);
 }
 
+// Transient terminal-style popup for drone events
+function showTerminalPopup(det, isNew) {
+  const old = document.getElementById('dronePopup');
+  if (old) old.remove();
+  const popup = document.createElement('div');
+  popup.id = 'dronePopup';
+  Object.assign(popup.style, {
+    position: 'fixed',
+    top: '10px',
+    left: '50%',
+    transform: 'translateX(-50%)',
+    background: 'rgba(0,0,0,0.5)',
+    color: 'lime',
+    fontFamily: 'monospace',
+    whiteSpace: 'pre',
+    padding: '8px 12px',
+    border: '1px solid lime',
+    borderRadius: '4px',
+    zIndex: 2000,
+    opacity: 0.9
+  });
+    const alias = aliases[det.mac];
+  const rid   = det.basic_id || 'N/A';
+  let header;
+  let text = '';
+  if (alias) {
+    header = 'Known Drone active!';
+    text = `${header}\n${alias}\nRID: ${rid} MAC: ${det.mac}`;
+  } else {
+    header = isNew ? 'New Drone detected!' : 'Drone active again!';
+    text = `${header}\nRID: ${rid} MAC: ${det.mac}`;
+  }
+  popup.textContent = text;
+  document.body.appendChild(popup);
+  setTimeout(() => popup.remove(), 3000);
+}
+
 var followLock = { type: null, id: null, enabled: false };
 
 function generateObserverPopup() {
@@ -2711,6 +2748,7 @@ async function updateData() {
           // Auto-zoom to new drone when no lock is active
           if (!followLock.enabled && det.drone_lat && det.drone_long) {
               safeSetView([det.drone_lat, det.drone_long]);
+              showTerminalPopup(det, true);
           }
         }
         if (droneCircles[mac]) { droneCircles[mac].setLatLng([droneLat, droneLng]); }
