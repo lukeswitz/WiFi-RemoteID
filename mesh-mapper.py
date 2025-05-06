@@ -496,27 +496,8 @@ def update_detection(detection):
     new_drone_long = detection.get("drone_long", 0)
     valid_drone = (new_drone_lat != 0 and new_drone_long != 0)
 
-    # If the new detection has invalid (0) drone coordinates...
+    # If the new detection has invalid (0) drone coordinates, ignore it entirely
     if not valid_drone:
-        # If there is an existing record with valid coordinates, update only non-coordinate fields.
-        if mac in tracked_pairs:
-            existing = tracked_pairs[mac]
-            if existing.get("drone_lat", 0) != 0 and existing.get("drone_long", 0) != 0:
-                # Update fields other than drone coordinates
-                for field in ['rssi', 'basic_id', 'drone_altitude']:
-                    if field in detection:
-                        existing[field] = detection[field]
-                # Update pilot coordinates only if they are valid (non zero)
-                new_pilot_lat = detection.get("pilot_lat", 0)
-                new_pilot_long = detection.get("pilot_long", 0)
-                if new_pilot_lat != 0:
-                    existing["pilot_lat"] = new_pilot_lat
-                if new_pilot_long != 0:
-                    existing["pilot_long"] = new_pilot_long
-                existing["last_update"] = time.time()
-                print(f"Ignored update for {mac} due to invalid drone coordinates, preserving previous valid coordinates.")
-                return
-        # No previous valid record exists: ignore the detection entirely.
         print(f"Ignored detection for {mac} because drone coordinates are zero.")
         return
 
@@ -2017,21 +1998,23 @@ function showTerminalPopup(det, isNew) {
   if (old) old.remove();
   const popup = document.createElement('div');
   popup.id = 'dronePopup';
-  Object.assign(popup.style, {
-    position: 'fixed',
-    top: '10px',
-    left: '50%',
-    transform: 'translateX(-50%)',
-    background: 'rgba(0,0,0,0.5)',
-    color: 'lime',
-    fontFamily: 'monospace',
-    whiteSpace: 'pre',
-    padding: '8px 12px',
-    border: '1px solid lime',
-    borderRadius: '4px',
-    zIndex: 2000,
-    opacity: 0.9
-  });
+      const isMobile = window.innerWidth <= 600;
+      Object.assign(popup.style, {
+        position: 'fixed',
+        top: isMobile ? '60px' : '10px',
+        left: '50%',
+        transform: 'translateX(-50%)',
+        background: 'rgba(0,0,0,0.5)',
+        color: 'lime',
+        fontFamily: 'monospace',
+        whiteSpace: 'pre',
+        padding: isMobile ? '4px 8px' : '8px 12px',
+        border: '1px solid lime',
+        borderRadius: '4px',
+        zIndex: 2000,
+        opacity: 0.9,
+        fontSize: isMobile ? '0.75em' : ''
+      });
     const alias = aliases[det.mac];
   const rid   = det.basic_id || 'N/A';
   let header;
@@ -2105,7 +2088,7 @@ function updateObserverPopupButtons() {
 function generatePopupContent(detection, markerType) {
   let content = '';
   let aliasText = aliases[detection.mac] ? aliases[detection.mac] : "No Alias";
-  content += '<strong>ID:</strong> <span id="aliasDisplay_' + detection.mac + '" style="color:#87CEEB;">' + aliasText + '</span> (MAC: ' + detection.mac + ')<br>';
+  content += '<strong>ID:</strong> <span id="aliasDisplay_' + detection.mac + '" style="color:#FF00FF;">' + aliasText + '</span> (MAC: ' + detection.mac + ')<br>';
   
   if (detection.basic_id || detection.faa_data) {
     if (detection.basic_id) {
@@ -2681,8 +2664,8 @@ function updateComboList(data) {
     const color = get_color_for_mac(mac);
     item.style.borderColor = color;
     item.style.color = color;
-    // Mark items seen in the last 15 seconds
-    const isRecent = detection && ((currentTime - detection.last_update) <= 15);
+    // Mark items seen in the last 5 second
+    const isRecent = detection && ((currentTime - detection.last_update) <= 5);
     item.classList.toggle('recent', isRecent);
     if (isActive) {
       if (item.parentNode !== activePlaceholder) { activePlaceholder.appendChild(item); }
@@ -2768,7 +2751,7 @@ async function updateData() {
         if (!lastDrone || lastDrone[0] != droneLat || lastDrone[1] != droneLng) { dronePathCoords[mac].push([droneLat, droneLng]); }
         if (dronePolylines[mac]) { map.removeLayer(dronePolylines[mac]); }
         dronePolylines[mac] = L.polyline(dronePathCoords[mac], {color: color}).addTo(map);
-        if (currentTime - det.last_update <= 15) {
+        if (currentTime - det.last_update <= 5) {
           const dynamicRadius = getDynamicSize() * 0.45;
           const ringWeight = 3 * 0.8;  // 20% thinner
           const ringRadius = dynamicRadius + ringWeight / 2;  // sit just outside the main circle
