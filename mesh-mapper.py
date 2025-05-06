@@ -2708,6 +2708,10 @@ async function updateData() {
                                 .bindPopup(generatePopupContent(det, 'drone'))
                                 .addTo(map)
                                 .on('click', function(){ map.setView(this.getLatLng(), map.getZoom()); });
+          // Auto-zoom to new drone when no lock is active
+          if (!followLock.enabled && det.drone_lat && det.drone_long) {
+              safeSetView([det.drone_lat, det.drone_long]);
+          }
         }
         if (droneCircles[mac]) { droneCircles[mac].setLatLng([droneLat, droneLng]); }
         else {
