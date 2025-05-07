@@ -551,35 +551,34 @@ def update_detection(detection):
         })
     generate_kml()
     # ----------------------------------
-    # Send Cursor-on-Target for this detection via TCP/TLS socket
-    try:
-        cot_time = datetime.utcnow().isoformat() + 'Z'
-        stale_time = (datetime.utcnow() + timedelta(seconds=staleThreshold)).isoformat() + 'Z'
-        drone_cot = (
-            f"<event version='2.0' uid='drone-{mac}' type='a-f-G-U-C' how='m-p' "
-            f"time='{cot_time}' start='{cot_time}' stale='{stale_time}'>"
-            f"<point lat='{detection['drone_lat']}' lon='{detection['drone_long']}' "
-            f"hae='{detection['drone_altitude']}' ce='9999999' le='9999999'/></event>"
-        )
-        pilot_cot = (
-            f"<event version='2.0' uid='pilot-{mac}' type='a-f-G-U-P' how='m-p' "
-            f"time='{cot_time}' start='{cot_time}' stale='{stale_time}'>"
-            f"<point lat='{detection.get('pilot_lat', 0)}' lon='{detection.get('pilot_long', 0)}' "
-            f"hae='0' ce='9999999' le='9999999'/></event>"
-        )
-        print(f"[DEBUG] Drone COT XML: {drone_cot}")
-        if _cot_messenger:
+    # Send Cursor-on-Target for this detection via TCP/TLS socket (only if TAK enabled)
+    if TAK_SETTINGS.get('enabled') and '_cot_messenger' in globals() and _cot_messenger:
+        logging.info(f"[TAK] Sending CoT for MAC {mac}")
+        try:
+            cot_time = datetime.utcnow().isoformat() + 'Z'
+            stale_time = (datetime.utcnow() + timedelta(seconds=staleThreshold)).isoformat() + 'Z'
+            drone_cot = (
+                f"<event version='2.0' uid='drone-{mac}' type='a-f-G-U-C' how='m-p' "
+                f"time='{cot_time}' start='{cot_time}' stale='{stale_time}'>"
+                f"<point lat='{detection['drone_lat']}' lon='{detection['drone_long']}' "
+                f"hae='{detection['drone_altitude']}' ce='9999999' le='9999999'/></event>"
+            )
+            pilot_cot = (
+                f"<event version='2.0' uid='pilot-{mac}' type='a-f-G-U-P' how='m-p' "
+                f"time='{cot_time}' start='{cot_time}' stale='{stale_time}'>"
+                f"<point lat='{detection.get('pilot_lat', 0)}' lon='{detection.get('pilot_long', 0)}' "
+                f"hae='0' ce='9999999' le='9999999'/></event>"
+            )
+            print(f"[DEBUG] Drone COT XML: {drone_cot}")
             _cot_messenger.send_cot(drone_cot.encode('utf-8'))
-        else:
-            logging.warning("CotMessenger not configured; skipping drone CoT send")
-        if detection.get('pilot_lat', 0) and detection.get('pilot_long', 0):
-            print(f"[DEBUG] Pilot COT XML: {pilot_cot}")
-            if _cot_messenger:
+            logging.info(f"[TAK] Drone CoT sent for MAC {mac}")
+            if detection.get('pilot_lat', 0) and detection.get('pilot_long', 0):
+                print(f"[DEBUG] Pilot COT XML: {pilot_cot}")
                 _cot_messenger.send_cot(pilot_cot.encode('utf-8'))
-            else:
-                logging.warning("CotMessenger not configured; skipping pilot CoT send")
-    except Exception as e:
-        logging.error(f"COT publish failed: {e}")
+                logging.info(f"[TAK] Pilot CoT sent for MAC {mac}")
+        except Exception as e:
+            # Only log TAK errors if TAK mode is truly enabled
+            logging.error(f"COT publish failed: {e}")
     # ----------------------------------
 
 # ----------------------
@@ -1838,9 +1837,8 @@ document.addEventListener('DOMContentLoaded', () => {
           })
           .then(res => res.json())
           .then(() => {
-            // Immediately refresh detection and serial status after toggling TAK
+            // Immediately refresh detection and TAK status after toggling TAK
             updateData();
-            updateSerialStatus();
             updateTakStatus();
           })
           .catch(err => console.error('Error updating TAK settings:', err));
