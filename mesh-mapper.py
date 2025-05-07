@@ -1998,41 +1998,47 @@ function safeSetView(latlng, zoom=18) {
 
 // Transient terminal-style popup for drone events
 function showTerminalPopup(det, isNew) {
+  // Remove any existing popup
   const old = document.getElementById('dronePopup');
   if (old) old.remove();
+
+  // Build a new popup container
   const popup = document.createElement('div');
   popup.id = 'dronePopup';
-      const isMobile = window.innerWidth <= 600;
-      Object.assign(popup.style, {
-        position: 'fixed',
-        top: isMobile ? '60px' : '10px',
-        left: '50%',
-        transform: 'translateX(-50%)',
-        background: 'rgba(0,0,0,0.5)',
-        color: 'lime',
-        fontFamily: 'monospace',
-        whiteSpace: 'pre',
-        padding: isMobile ? '4px 8px' : '8px 12px',
-        border: '1px solid lime',
-        borderRadius: '4px',
-        zIndex: 2000,
-        opacity: 0.9,
-        fontSize: isMobile ? '0.75em' : ''
-      });
-    const alias = aliases[det.mac];
+  const isMobile = window.innerWidth <= 600;
+  Object.assign(popup.style, {
+    position: 'fixed',
+    top: isMobile ? '60px' : '10px',
+    left: '50%',
+    transform: 'translateX(-50%)',
+    background: 'rgba(0,0,0,0.8)',
+    color: 'lime',
+    fontFamily: 'monospace',
+    whiteSpace: 'nowrap',
+    padding: isMobile ? '2px 4px' : '4px 8px',
+    border: '1px solid lime',
+    borderRadius: '4px',
+    zIndex: 2000,
+    opacity: 0.9,
+    fontSize: isMobile ? '0.75em' : '',
+    display: 'inline-block',
+  });
+
+  // Build concise popup text
+  const alias = aliases[det.mac];
   const rid   = det.basic_id || 'N/A';
-  let header;
-  let text = '';
-  if (alias) {
-    header = 'Known Drone active!';
-    text = `${header}\n${alias}\nRID: ${rid} MAC: ${det.mac}`;
-  } else {
-    header = isNew ? 'New Drone detected!' : 'Drone active again!';
-    text = `${header}\nRID: ${rid} MAC: ${det.mac}`;
-  }
-  popup.textContent = text;
+  const header = alias
+    ? 'Known drone detected'
+    : (isNew ? 'New drone detected' : 'Previously seen non-aliased drone detected');
+  const namePart = alias ? alias : '';
+  const content = alias
+    ? `${header} - ${namePart} - RID:${rid} MAC:${det.mac}`
+    : `${header} - RID:${rid} MAC:${det.mac}`;
+  popup.textContent = content;
   document.body.appendChild(popup);
-  setTimeout(() => popup.remove(), 3000);
+
+  // Auto-remove after 4 seconds
+  setTimeout(() => popup.remove(), 4000);
 }
 
 var followLock = { type: null, id: null, enabled: false };
@@ -2690,8 +2696,23 @@ function updateComboList(data) {
 }
 
 // Only zoom on truly new detections—never on the initial restore
-var initialLoad = true;
-var seenDrones = {};
+var initialLoad    = true;
+var seenDrones     = {};
+var seenAliased    = {};
+var previousActive = {};
+// Initialize seenDrones and previousActive from persisted trackedPairs to suppress reload popups
+(function() {
+  const stored = localStorage.getItem("trackedPairs");
+  if (stored) {
+    try {
+      const storedPairs = JSON.parse(stored);
+      for (const mac in storedPairs) {
+        seenDrones[mac] = true;
+        // previousActive[mac] = true;
+      }
+    } catch(e) { console.error("Failed to parse persisted trackedPairs", e); }
+  }
+})();
 async function updateData() {
   try {
     const response = await fetch(window.location.origin + '/api/detections')
@@ -2720,13 +2741,44 @@ async function updateData() {
         if (droneBroadcastRings[mac]) { map.removeLayer(droneBroadcastRings[mac]); delete droneBroadcastRings[mac]; }
         delete dronePathCoords[mac];
         delete pilotPathCoords[mac];
-        
+        // Mark as inactive to enable revival popups
+        previousActive[mac] = false;
         continue;
       }
       const droneLat = det.drone_lat, droneLng = det.drone_long;
       const pilotLat = det.pilot_lat, pilotLng = det.pilot_long;
       const validDrone = (droneLat !== 0 && droneLng !== 0);
+      // State-change popup logic
+      const alias     = aliases[mac];
+      const wasActive = previousActive[mac] || false;
+      const isNew     = !seenDrones[mac];
+
+      // Only fire popup on transition from inactive to active, after initial load
+      if (!initialLoad && validDrone && !wasActive) {
+        if (alias) {
+          // Aliased drone: first-ever sight only
+          if (!seenAliased[mac]) {
+            seenAliased[mac] = true;
+            showTerminalPopup(det, false);
+          }
+        } else {
+          if (!seenDrones[mac]) {
+            // New unaliased drone
+            seenDrones[mac] = true;
+            safeSetView([droneLat, droneLng]);
+            showTerminalPopup(det, true);
+          } else {
+            // Previously seen non-aliased drone revival
+            showTerminalPopup(det, false);
+          }
+        }
+      }
+      // Persist for next update
+      previousActive[mac] = validDrone;
+
       const validPilot = (pilotLat !== 0 && pilotLng !== 0);
+    // Allow popups after initial load completes
+    initialLoad = false;
       if (!validDrone && !validPilot) continue;
       const color = get_color_for_mac(mac);
       if (!initialLoad && !firstDetectionZoomed && validDrone) {
@@ -2745,12 +2797,6 @@ async function updateData() {
                                 .bindPopup(generatePopupContent(det, 'drone'))
                                 .addTo(map)
                                 .on('click', function(){ map.setView(this.getLatLng(), map.getZoom()); });
-          // Zoom only once per session, after initial load
-          if (!initialLoad && !seenDrones[mac] && !followLock.enabled && det.drone_lat && det.drone_long) {
-            seenDrones[mac] = true;
-            safeSetView([det.drone_lat, det.drone_long]);
-            showTerminalPopup(det, true);
-          }
         }
         if (droneCircles[mac]) { droneCircles[mac].setLatLng([droneLat, droneLng]); }
         else {
@@ -2826,7 +2872,10 @@ async function updateData() {
         pilotPolylines[mac] = L.polyline(pilotPathCoords[mac], {color: color, dashArray: '5,5'}).addTo(map);
         if (followLock.enabled && followLock.type === 'pilot' && followLock.id === mac) { map.setView([pilotLat, pilotLng], map.getZoom()); }
       }
+      // At end of loop iteration, remember this state for next time
+      previousActive[mac] = validDrone;
     }
+    initialLoad = false;
     updateComboList(data);
     updateAliases();
     // Mark that the first restore/update is done
