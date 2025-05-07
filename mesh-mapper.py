@@ -1868,6 +1868,16 @@ document.addEventListener('DOMContentLoaded', () => {
   // Start polling based on current setting
   updateData();
   updateDataInterval = setInterval(updateData, mainSwitch && mainSwitch.checked ? 1000 : 100);
+  // Adaptive polling: slow down during map interactions
+  map.on('zoomstart dragstart', () => {
+    clearInterval(updateDataInterval);
+    updateDataInterval = setInterval(updateData, 500);
+  });
+  map.on('zoomend dragend', () => {
+    clearInterval(updateDataInterval);
+    const interval = mainSwitch && mainSwitch.checked ? 1000 : 100;
+    updateDataInterval = setInterval(updateData, interval);
+  });
 
   // Staleout slider initialization
   const staleoutSlider = document.getElementById('staleoutSlider');
@@ -2410,6 +2420,7 @@ const map = L.map('map', {
   attributionControl: false,
   maxZoom: initialLayer.options.maxZoom
 });
+var canvasRenderer = L.canvas();
 // create custom Leaflet panes for z-ordering
 map.createPane('pilotCirclePane');
 map.getPane('pilotCirclePane').style.zIndex = 600;
@@ -2420,7 +2431,7 @@ map.getPane('droneCirclePane').style.zIndex = 650;
 map.createPane('droneIconPane');
 map.getPane('droneIconPane').style.zIndex = 651;
 
-map.on('moveend', function() {
+map.on('moveend zoomend', function() {
   let center = map.getCenter();
   let zoom = map.getZoom();
   localStorage.setItem('mapCenter', JSON.stringify(center));
@@ -2557,6 +2568,7 @@ function showHistoricalDrone(mac, detection) {
     const size = Math.max(12, Math.min(zoomLevel * 1.5, 24));
     droneCircles[mac] = L.circleMarker([detection.drone_lat, detection.drone_long],
                                        {
+                                         renderer: canvasRenderer,
                                          pane: 'droneCirclePane',
                                          radius: size * 0.45,
                                          color: color,
@@ -2569,7 +2581,10 @@ function showHistoricalDrone(mac, detection) {
   const lastDrone = dronePathCoords[mac][dronePathCoords[mac].length - 1];
   if (!lastDrone || lastDrone[0] != detection.drone_lat || lastDrone[1] != detection.drone_long) { dronePathCoords[mac].push([detection.drone_lat, detection.drone_long]); }
   if (dronePolylines[mac]) { map.removeLayer(dronePolylines[mac]); }
-  dronePolylines[mac] = L.polyline(dronePathCoords[mac], {color: color}).addTo(map);
+  dronePolylines[mac] = L.polyline(dronePathCoords[mac], {
+    renderer: canvasRenderer,
+    color: color
+  }).addTo(map);
   if (detection.pilot_lat && detection.pilot_long && detection.pilot_lat != 0 && detection.pilot_long != 0) {
     if (!pilotMarkers[mac]) {
       pilotMarkers[mac] = L.marker([detection.pilot_lat, detection.pilot_long], {
@@ -2588,6 +2603,7 @@ function showHistoricalDrone(mac, detection) {
       const size = Math.max(12, Math.min(zoomLevel * 1.5, 24));
       pilotCircles[mac] = L.circleMarker([detection.pilot_lat, detection.pilot_long],
                                           {
+                                            renderer: canvasRenderer,
                                             pane: 'pilotCirclePane',
                                             radius: size * 0.34,
                                             color: color,
@@ -2603,7 +2619,11 @@ function showHistoricalDrone(mac, detection) {
       pilotPathCoords[mac].push([detection.pilot_lat, detection.pilot_long]);
     }
     if (pilotPolylines[mac]) { map.removeLayer(pilotPolylines[mac]); }
-    pilotPolylines[mac] = L.polyline(pilotPathCoords[mac], { color: color, dashArray: '5,5' }).addTo(map);
+    pilotPolylines[mac] = L.polyline(pilotPathCoords[mac], {
+      renderer: canvasRenderer,
+      color: color,
+      dashArray: '5,5'
+    }).addTo(map);
   }
 }
 
@@ -2675,6 +2695,9 @@ function updateComboList(data) {
   });
 }
 
+// Only zoom on truly new detections—never on the initial restore
+var initialLoad = true;
+var seenDrones = {};
 async function updateData() {
   try {
     const response = await fetch(window.location.origin + '/api/detections')
@@ -2712,7 +2735,7 @@ async function updateData() {
       const validPilot = (pilotLat !== 0 && pilotLng !== 0);
       if (!validDrone && !validPilot) continue;
       const color = get_color_for_mac(mac);
-      if (!firstDetectionZoomed && validDrone) {
+      if (!initialLoad && !firstDetectionZoomed && validDrone) {
         firstDetectionZoomed = true;
         safeSetView([droneLat, droneLng], 18);
       }
@@ -2728,10 +2751,11 @@ async function updateData() {
                                 .bindPopup(generatePopupContent(det, 'drone'))
                                 .addTo(map)
                                 .on('click', function(){ map.setView(this.getLatLng(), map.getZoom()); });
-          // Auto-zoom to new drone when no lock is active
-          if (!followLock.enabled && det.drone_lat && det.drone_long) {
-              safeSetView([det.drone_lat, det.drone_long]);
-              showTerminalPopup(det, true);
+          // Zoom only once per session, after initial load
+          if (!initialLoad && !seenDrones[mac] && !followLock.enabled && det.drone_lat && det.drone_long) {
+            seenDrones[mac] = true;
+            safeSetView([det.drone_lat, det.drone_long]);
+            showTerminalPopup(det, true);
           }
         }
         if (droneCircles[mac]) { droneCircles[mac].setLatLng([droneLat, droneLng]); }
@@ -2811,6 +2835,8 @@ async function updateData() {
     }
     updateComboList(data);
     updateAliases();
+    // Mark that the first restore/update is done
+    initialLoad = false;
   } catch (error) { console.error("Error fetching detection data:", error); }
 }
 
