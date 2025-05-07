@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 import tempfile
 from cryptography.hazmat.primitives.serialization.pkcs12 import load_key_and_certificates
 from cryptography.hazmat.primitives import serialization
@@ -19,12 +18,9 @@ from datetime import datetime, timedelta
 from flask import Flask, request, jsonify, redirect, url_for, render_template_string, send_file
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
-
 import ssl
 import socket
-
 from urllib.parse import urlparse
-
 from typing import Optional
 
 # --- TLS context setup for TAK (inspired by DragonSync) ---
