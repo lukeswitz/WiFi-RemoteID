@@ -343,7 +343,6 @@ if os.path.isfile(pw_path):
     with open(pw_path, 'rb') as pf:
         p12_password = pf.read()
 global_tls_context = setup_tls_context(p12_path, p12_password, TAK_SETTINGS.get('skipVerify', True))
-\
 
 app = Flask(__name__)
 
@@ -3343,13 +3342,6 @@ def download_aliases():
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)
-#!/usr/bin/env python3
-import os
-import json
-import csv
-import time
-from datetime import datetime
-from flask import Flask, request, jsonify
 
 # --- TAK TLS/PKCS#12 Helper ---
 import ssl
@@ -3375,8 +3367,8 @@ def init_tak_client(p12_path, p12_password, host, port, skip_verify=False):
     tls_sock = context.wrap_socket(raw_sock, server_hostname=host)
     return tls_sock
 
-# --- ZMQ & TAK Settings (persist in memory for now) ---
-ZMQ_SETTINGS = {'enabled': False, 'endpoint': 'tcp://127.0.0.1:4224'}
+# --- TAK Settings (persist in memory for now) ---
+
 TAK_SETTINGS = {'enabled': False, 'endpoint': '127.0.0.1:8087', 'skipVerify': False}
 
 app = Flask(__name__)
@@ -3455,17 +3447,9 @@ def api_get_faa(identifier):
             return jsonify({'status': 'ok', 'faa_data': faa_data})
     return jsonify({'status': 'error', 'message': 'No FAA data found for this identifier'}), 404
 
-# --- ZMQ & TAK Settings API Endpoints ---
-@app.route('/api/zmq_settings', methods=['GET'])
-def api_get_zmq_settings():
-    return jsonify(ZMQ_SETTINGS)
+# --- TAK Settings API Endpoints ---
 
-@app.route('/api/zmq_settings', methods=['POST'])
-def api_post_zmq_settings():
-    data = request.get_json()
-    ZMQ_SETTINGS['enabled'] = data.get('enabled', ZMQ_SETTINGS['enabled'])
-    ZMQ_SETTINGS['endpoint'] = data.get('endpoint', ZMQ_SETTINGS['endpoint'])
-    return jsonify(ZMQ_SETTINGS)
+
 
 @app.route('/api/tak_settings', methods=['GET'])
 def api_get_tak_settings():
@@ -3501,7 +3485,7 @@ HTML_TEMPLATE = '''
   <title>Mesh Mapper</title>
   <style>
     body { background-color: black; color: lime; font-family: monospace; }
-    #zmqSection, #takSection { margin-top: 8px; text-align: center; }
+    #takSection { margin-top: 8px; text-align: center; }
     .switch { position: relative; display: inline-block; width: 40px; height: 20px; }
     .switch input { opacity: 0; width: 0; height: 0; }
     .slider { position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0; background-color: #555; transition: .4s; border-radius: 20px; }
@@ -3533,24 +3517,6 @@ HTML_TEMPLATE = '''
 </head>
 <body>
   <h1>Mesh Mapper</h1>
-  <div id="zmqSection">
-    <div style="margin-top:8px; display:flex; align-items:center; justify-content:center; height:20px;">
-      <label style="color:lime; font-family:monospace; margin-right:8px;">ZMQ Mode</label>
-      <label class="switch">
-        <input type="checkbox" id="zmqModeSwitch">
-        <span class="slider"></span>
-      </label>
-    </div>
-    <div style="margin-top:5px;">
-      <div style="display:flex; justify-content:center; align-items:center; margin-top:5px;">
-        <input type="text" id="zmqIP" value="127.0.0.1" style="margin-right:5px;width:auto;">
-        <span style="color:lime;">:</span>
-        <input type="text" id="zmqPort" value="4224" style="margin-left:5px;width:auto;">
-      </div>
-      <button id="applyZmqSettings" style="margin-top:5px;">Update ZMQ</button>
-    </div>
-    <div style="color:#FF00FF;font-size:0.75em;margin-top:4px;">Connect to ZMQ decoder via direct IP connection</div>
-  </div>
   <div id="takSection">
     <div style="margin-top:8px; display:flex; align-items:center; justify-content:center; height:20px;">
       <label style="color:lime; font-family:monospace; margin-right:8px;">TAK Mode</label>
@@ -3579,69 +3545,10 @@ HTML_TEMPLATE = '''
       <div style="height:8px;"></div>
     </div>
   </div>
-  <script>
-    // ZMQ Settings
-    const zmqSwitch = document.getElementById('zmqModeSwitch');
-    const zmqIP = document.getElementById('zmqIP');
-    const zmqPort = document.getElementById('zmqPort');
-    const applyZmqSettings = document.getElementById('applyZmqSettings');
-    // Load ZMQ settings from server
-    fetch('/api/zmq_settings').then(res => res.json()).then(data => {
-      zmqSwitch.checked = data.enabled;
-      try {
-        const url = new URL(data.endpoint);
-        zmqIP.value = url.hostname;
-        zmqPort.value = url.port;
-      } catch (e) {}
-    });
-    applyZmqSettings.onclick = function() {
-      const endpoint = `tcp://${zmqIP.value.trim()}:${zmqPort.value.trim()}`;
-      fetch('/api/zmq_settings', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({enabled: zmqSwitch.checked, endpoint: endpoint})
-      });
-    };
-    // TAK Settings
-    const takSwitch = document.getElementById('takModeSwitch');
-    const takIP = document.getElementById('takIP');
-    const takPort = document.getElementById('takPort');
-    const takSkipVerify = document.getElementById('takSkipVerify');
-    const takP12 = document.getElementById('takP12');
-    const takP12Button = document.getElementById('takP12Button');
-    const takP12Filename = document.getElementById('takP12Filename');
-    const takP12Pass = document.getElementById('takP12Pass');
-    const applyTakSettings = document.getElementById('applyTakSettings');
-    // Load TAK settings from server
-    fetch('/api/tak_settings').then(res => res.json()).then(data => {
-      takSwitch.checked = data.enabled;
-      try {
-        const [h, p] = data.endpoint.split(':');
-        takIP.value = h;
-        takPort.value = p;
-      } catch (e) {}
-      takSkipVerify.checked = data.skipVerify;
-    });
-    takP12Button.onclick = () => takP12.click();
-    takP12.onchange = () => {
-      takP12Filename.textContent = takP12.files.length ? takP12.files[0].name : '';
-    };
-    applyTakSettings.onclick = function() {
-      const endpoint = `${takIP.value.trim()}:${takPort.value.trim()}`;
-      fetch('/api/tak_settings', {
-        method: 'POST',
-        headers: {'Content-Type':'application/json'},
-        body: JSON.stringify({enabled: takSwitch.checked, endpoint, skipVerify: takSkipVerify.checked})
-      });
-      const formData = new FormData();
-      if (takP12.files.length) formData.append('p12', takP12.files[0]);
-      formData.append('password', takP12Pass.value);
-      fetch('/api/upload_tak_certs', { method: 'POST', body: formData });
-    };
-  </script>
 </body>
 </html>
 '''
+
 
 @app.route('/')
 def index():
