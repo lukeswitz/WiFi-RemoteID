@@ -1,4 +1,3 @@
-
 import os
 import time
 import json
@@ -2026,12 +2025,17 @@ function showTerminalPopup(det, isNew) {
   // Build concise popup text
   const alias = aliases[det.mac];
   const rid   = det.basic_id || 'N/A';
-  const header = alias
-    ? 'Known drone detected'
-    : (isNew ? 'New drone detected' : 'Previously seen non-aliased drone detected');
+  let header;
+  if (!det.drone_lat || !det.drone_long || det.drone_lat === 0 || det.drone_long === 0) {
+    header = 'Drone with no GPS lock detected';
+  } else if (alias) {
+    header = `Known drone detected – ${alias}`;
+  } else {
+    header = isNew ? 'New drone detected' : 'Previously seen non-aliased drone detected';
+  }
   const namePart = alias ? alias : '';
   const content = alias
-    ? `${header} - ${namePart} - RID:${rid} MAC:${det.mac}`
+    ? `${header} - RID:${rid} MAC:${det.mac}`
     : `${header} - RID:${rid} MAC:${det.mac}`;
   popup.textContent = content;
   document.body.appendChild(popup);
