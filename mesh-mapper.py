@@ -1149,7 +1149,8 @@ PORT_SELECTION_PAGE = '''
       .then(res => res.json())
       .then(data => {
         portTakSwitch.checked = data.enabled;
-        const [ip, port] = data.endpoint.split(':');
+        let endpoint = data.endpoint && data.endpoint.trim() !== '' ? data.endpoint : '127.0.0.1:8087';
+        const [ip, port] = endpoint.split(':');
         document.getElementById('portTakIP').value = ip;
         document.getElementById('portTakPort').value = port;
         document.getElementById('portTakSkipVerify').checked = data.skipVerify;
