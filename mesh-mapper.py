@@ -1,31 +1,30 @@
+
+import os
+import time
+import json
+import csv
+import logging
+import threading
+import subprocess
+import socket
+import ssl
 import tempfile
-from cryptography.hazmat.primitives.serialization.pkcs12 import load_key_and_certificates
-from cryptography.hazmat.primitives import serialization
+import atexit
 import requests
 import urllib3
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-import json
-import logging
-logging.basicConfig(level=logging.DEBUG)
-import threading
 import serial
 import serial.tools.list_ports
-import time
-import csv
-import os
-import subprocess
 from datetime import datetime, timedelta
-from flask import Flask, request, jsonify, redirect, url_for, render_template_string, send_file
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
-import ssl
-import socket
 from urllib.parse import urlparse
 from typing import Optional
+from cryptography.hazmat.primitives.serialization.pkcs12 import load_key_and_certificates
+from cryptography.hazmat.primitives import serialization
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
+from flask import Flask, request, jsonify, redirect, url_for, render_template, render_template_string, send_file
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-# --- TLS context setup for TAK (inspired by DragonSync) ---
-import atexit
-import tempfile
+app = Flask(__name__)
 
 def setup_tls_context(p12_path: str, p12_password: Optional[bytes], skip_verify: bool) -> Optional[ssl.SSLContext]:
     """Load a PKCS#12 file and return an SSLContext or None if no file provided."""
