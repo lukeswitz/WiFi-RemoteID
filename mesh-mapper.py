@@ -1,4 +1,3 @@
-
 import os
 import time
 import json
@@ -355,8 +354,6 @@ if os.path.isfile(pw_path):
         p12_password = pf.read()
 global_tls_context = setup_tls_context(p12_path, p12_password, TAK_SETTINGS.get('skipVerify', True))
 
-app = Flask(__name__)
-
 # ----------------------
 # Global Variables & Files
 # ----------------------
@@ -653,6 +650,23 @@ def query_remote_id(session, remote_id):
     except Exception as e:
         logging.exception("Error querying FAA API: %s", e)
         return None
+
+# ----------------------
+# Webhook popup API Endpoint 
+# ----------------------
+@app.route('/api/webhook_popup', methods=['POST'])
+def webhook_popup():
+    data = request.get_json()
+    webhook_url = data.get("webhook_url")
+    if not webhook_url:
+        return jsonify({"status": "error", "reason": "No webhook URL provided"}), 400
+    try:
+        clean_data = data.get("payload", {})
+        response = requests.post(webhook_url, json=clean_data, timeout=5)
+        return jsonify({"status": "ok", "response": response.status_code}), 200
+    except Exception as e:
+        logging.error(f"Webhook send error: {e}")
+        return jsonify({"status": "error", "message": str(e)}), 500
 
 # ----------------------
 # New FAA Query API Endpoint
@@ -1018,6 +1032,11 @@ PORT_SELECTION_PAGE = '''
         <option value="{{ port.device }}">{{ port.device }} - {{ port.description }}</option>
       {% endfor %}
     </select><br>
+    <div style="margin-top:5px; text-align:center;">
+      <label for="webhookUrl" style="font-size:18px; font-family:'Orbitron', monospace; color:#87CEEB;">Webhook Destination URL</label><br>
+      <input type="text" id="webhookUrl" placeholder="https://example.com/webhook"
+             style="width:300px; background-color:#222; color:#87CEEB; border:1px solid #FF00FF; padding:4px; font-size:1em; outline:none;">
+    </div>
     <div id="portTakModeContainer" class="tooltip-container" style="text-align:center; margin:5px 0;">
         <label style="font-size:18px; font-family:'Orbitron', monospace; display:inline-block; margin-right:10px; vertical-align:middle;">Enable TAK Mode</label>
         <label class="switch" style="vertical-align:middle;">
@@ -1038,9 +1057,9 @@ PORT_SELECTION_PAGE = '''
         <button id="portApplyTakSettings" style="display:inline-block; margin-left:10px;">Update TAK</button>
       </div>
     </div>
-        <button id="beginMapping" type="submit" style="display:block; margin:20px auto 0; padding:8px 12px; border:1px solid lime; background-color:#333; color:lime; font-family:monospace; cursor:pointer;">
-          Begin Mapping
-        </button>
+    <button id="beginMapping" type="submit" style="display:block; margin:20px auto 0; padding:8px 12px; border:1px solid lime; background-color:#333; color:lime; font-family:monospace; cursor:pointer;">
+      Begin Mapping
+    </button>
   </form>
   <pre class="ascii-art">{{ bottom_ascii }}</pre>
   <script>
@@ -1156,6 +1175,14 @@ PORT_SELECTION_PAGE = '''
       .catch(err => console.error('Error toggling TAK settings:', err));
     });
 
+
+    // Persist webhook input to localStorage
+    const webhookInput = document.getElementById('webhookUrl');
+    const storedWebhookUrl = localStorage.getItem('popupWebhookUrl') || '';
+    webhookInput.value = storedWebhookUrl;
+    webhookInput.addEventListener('change', () => {
+      localStorage.setItem('popupWebhookUrl', webhookInput.value.trim());
+    });
 
     // Load persisted TAK settings on page load
     fetch(window.location.origin + '/api/tak_settings')
@@ -2052,6 +2079,47 @@ function showTerminalPopup(det, isNew) {
     ? `${header} - RID:${rid} MAC:${det.mac}`
     : `${header} - RID:${rid} MAC:${det.mac}`;
   popup.textContent = content;
+
+  // --- Webhook logic (scoped, non-intrusive) ---
+  try {
+    const webhookUrl = localStorage.getItem('popupWebhookUrl');
+    if (webhookUrl && webhookUrl.startsWith("http")) {
+      const alias = aliases[det.mac];
+      let header;
+      if (!det.drone_lat || !det.drone_long || det.drone_lat === 0 || det.drone_long === 0) {
+        header = 'Drone with no GPS lock detected';
+      } else if (alias) {
+        header = `Known drone detected – ${alias}`;
+      } else {
+        header = isNew ? 'New drone detected' : 'Previously seen non-aliased drone detected';
+      }
+      const payload = {
+        alert: header,
+        mac: det.mac,
+        basic_id: det.basic_id || null,
+        alias: alias || null,
+        drone_lat: det.drone_lat || null,
+        drone_long: det.drone_long || null,
+        pilot_lat: det.pilot_lat || null,
+        pilot_long: det.pilot_long || null,
+        faa_data: (det.faa_data && det.faa_data.data && Array.isArray(det.faa_data.data.items) && det.faa_data.data.items.length > 0)
+          ? det.faa_data.data.items[0]
+          : null,
+        drone_gmap: det.drone_lat && det.drone_long ? `https://www.google.com/maps?q=${det.drone_lat},${det.drone_long}` : null,
+        pilot_gmap: det.pilot_lat && det.pilot_long ? `https://www.google.com/maps?q=${det.pilot_lat},${det.pilot_long}` : null,
+        isNew: isNew
+      };
+      fetch('/api/webhook_popup', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ payload, webhook_url: webhookUrl })
+      }).catch(e => console.warn('Silent webhook fail:', e));
+    }
+  } catch (e) {
+    console.warn('Webhook logic skipped due to error', e);
+  }
+  // --- End webhook logic ---
+
   document.body.appendChild(popup);
 
   // Auto-remove after 4 seconds
@@ -3562,3 +3630,37 @@ def index():
 if __name__ == '__main__':
     app.run(debug=True, port=5000)
     
+# ----------------------
+# Webhook Proxy Endpoint
+# ----------------------
+
+# This endpoint a
+# accepts a POST with a "webhook_url" and relays the payload to the specified webhook URL.
+@app.route('/api/webhook_popup', methods=['POST'])
+def webhook_popup():
+    data = request.get_json()
+    webhook_url = data.get("webhook_url")
+    if not webhook_url:
+        return jsonify({"status": "error", "reason": "No webhook URL provided"}), 400
+    try:
+        response = requests.post(webhook_url, json=data, timeout=5)
+        return jsonify({"status": "ok", "response": response.status_code}), 200
+    except Exception as e:
+        logging.error(f"Webhook send error: {e}")
+        return jsonify({"status": "error", "message": str(e)}), 500
+# ----------------------
+# Webhook Relay Endpoint
+# ----------------------
+@app.route('/api/webhook_popup', methods=['POST'])
+def webhook_popup():
+    data = request.get_json()
+    webhook_url = data.get("webhook_url")
+    if not webhook_url:
+        return jsonify({"status": "error", "reason": "No webhook URL provided"}), 400
+    try:
+        clean_data = data.get("payload", {})
+        response = requests.post(webhook_url, json=clean_data, timeout=5)
+        return jsonify({"status": "ok", "response": response.status_code}), 200
+    except Exception as e:
+        logging.error(f"Webhook send error: {e}")
+        return jsonify({"status": "error", "message": str(e)}), 500
