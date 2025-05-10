@@ -1,3 +1,4 @@
+
 import os
 import time
 import json
@@ -38,7 +39,8 @@ def setup_tls_context(p12_path: str, p12_password: Optional[bytes], skip_verify:
     try:
         key, cert, more_certs = load_key_and_certificates(p12_data, p12_password)
     except Exception as e:
-        logging.error(f"Failed to load P12 certificates: {e}")
+        if TAK_SETTINGS.get('enabled'):
+            logging.error(f"Failed to load P12 certificates: {e}")
         return None
     # Write temp PEM files
     key_bytes = key.private_bytes(
@@ -114,10 +116,12 @@ class TAKClient:
                 return
             except Exception as e:
                 wait = min(self.backoff_factor ** self.retry_count, self.max_backoff)
-                logging.error(f"TAKClient connect error: {e}, retry in {wait}s")
+                if TAK_SETTINGS.get('enabled'):
+                    logging.error(f"TAKClient connect error: {e}, retry in {wait}s")
                 time.sleep(wait)
                 self.retry_count += 1
-        logging.critical("TAKClient max retries exceeded; giving up")
+        if TAK_SETTINGS.get('enabled'):
+            logging.critical("TAKClient max retries exceeded; giving up")
         self.sock = None
 
     def run_connect_loop(self):
@@ -134,11 +138,13 @@ class TAKClient:
         """
         for attempt in range(self.send_retries + 1):
             if not self.sock:
-                logging.warning("TAKClient: socket not connected, attempting reconnect...")
+                if TAK_SETTINGS.get('enabled'):
+                    logging.warning("TAKClient: socket not connected, attempting reconnect...")
                 with self.connecting_lock:
                     self.connect()
             if not self.sock:
-                logging.error("TAKClient: socket still not connected, dropping CoT")
+                if TAK_SETTINGS.get('enabled'):
+                    logging.error("TAKClient: socket still not connected, dropping CoT")
                 return
             try:
                 # ensure messages are newline-delimited for the TAK TCP listener
@@ -146,11 +152,13 @@ class TAKClient:
                 logging.info(f"\033[32mSent CoT message via TCP/TLS: {cot_xml}\033[0m")
                 return
             except (ssl.SSLError, OSError) as e:
-                logging.error(f"TAKClient send error on attempt {attempt+1}: {e}, reconnecting...")
+                if TAK_SETTINGS.get('enabled'):
+                    logging.error(f"TAKClient send error on attempt {attempt+1}: {e}, reconnecting...")
                 self.close()
                 with self.connecting_lock:
                     self.connect()
-        logging.error("TAKClient: failed to send CoT after retries")
+        if TAK_SETTINGS.get('enabled'):
+            logging.error("TAKClient: failed to send CoT after retries")
 
     def close(self):
         if self.sock:
@@ -201,20 +209,23 @@ class TAKPlainClient:
             self.sock = socket.create_connection((self.host, self.port), timeout=10)
             logging.info("Connected to ATAK client via plain TCP")
         except Exception as e:
-            logging.error(f"TAKPlainClient connect error: {e}")
+            if TAK_SETTINGS.get('enabled'):
+                logging.error(f"TAKPlainClient connect error: {e}")
             self.sock = None
 
     def send(self, cot_xml: bytes):
         if not self.sock:
             self.connect()
         if not self.sock:
-            logging.error("TAKPlainClient: socket not connected, dropping CoT")
+            if TAK_SETTINGS.get('enabled'):
+                logging.error("TAKPlainClient: socket not connected, dropping CoT")
             return
         try:
             self.sock.sendall(cot_xml + b'\n')
             logging.info(f"Sent CoT message via plain TCP: {cot_xml}")
         except Exception as e:
-            logging.error(f"TAKPlainClient send error: {e}")
+            if TAK_SETTINGS.get('enabled'):
+                logging.error(f"TAKPlainClient send error: {e}")
             try: self.sock.close()
             except: pass
             self.sock = None
@@ -266,9 +277,11 @@ class CotMessenger:
                 try:
                     self.mcast_sock.sendto(cot_xml, (self.multicast_address, self.multicast_port))
                 except Exception as e:
-                    logging.error(f"CotMessenger multicast error: {e}")
+                    if TAK_SETTINGS.get('enabled'):
+                        logging.error(f"CotMessenger multicast error: {e}")
             return
-        logging.error("CotMessenger: failed to send CoT after retries")
+        if TAK_SETTINGS.get('enabled'):
+            logging.error("CotMessenger: failed to send CoT after retries")
 
     def close(self):
         if self.tak_client:
@@ -575,7 +588,8 @@ def update_detection(detection):
                 logging.info(f"[TAK] Pilot CoT sent for MAC {mac}")
         except Exception as e:
             # Only log TAK errors if TAK mode is truly enabled
-            logging.error(f"COT publish failed: {e}")
+            if TAK_SETTINGS.get('enabled'):
+                logging.error(f"COT publish failed: {e}")
     # ----------------------------------
 
 # ----------------------
@@ -2753,31 +2767,18 @@ async function updateData() {
       const validDrone = (droneLat !== 0 && droneLng !== 0);
       // State-change popup logic
       const alias     = aliases[mac];
+      // New state calculation: consider time-based staleness
+      const activeNow = validDrone && det.last_update && (currentTime - det.last_update <= STALE_THRESHOLD);
       const wasActive = previousActive[mac] || false;
       const isNew     = !seenDrones[mac];
 
-      // Only fire popup on transition from inactive to active, after initial load
-      if (!initialLoad && validDrone && !wasActive) {
-        if (alias) {
-          // Aliased drone: first-ever sight only
-          if (!seenAliased[mac]) {
-            seenAliased[mac] = true;
-            showTerminalPopup(det, false);
-          }
-        } else {
-          if (!seenDrones[mac]) {
-            // New unaliased drone
-            seenDrones[mac] = true;
-            safeSetView([droneLat, droneLng]);
-            showTerminalPopup(det, true);
-          } else {
-            // Previously seen non-aliased drone revival
-            showTerminalPopup(det, false);
-          }
-        }
+      // Only fire popup on transition from inactive to active, after initial load, and within stale threshold
+      if (!initialLoad && det.last_update && (currentTime - det.last_update <= STALE_THRESHOLD) && !wasActive) {
+        showTerminalPopup(det, alias ? false : !seenDrones[mac]);
+        seenDrones[mac] = true;
       }
       // Persist for next update
-      previousActive[mac] = validDrone;
+      previousActive[mac] = activeNow;
 
       const validPilot = (pilotLat !== 0 && pilotLng !== 0);
     // Allow popups after initial load completes
