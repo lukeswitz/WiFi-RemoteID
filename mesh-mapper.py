@@ -513,42 +513,6 @@ def api_get_faa(identifier):
     return jsonify({'status': 'error', 'message': 'No FAA data found for this identifier'}), 404
 
 
-# ----------------------
-# Certificate Generation & Download Endpoints
-# ----------------------
-
-def generate_self_signed_cert():
-    cert_path = os.path.join(BASE_DIR, 'server-cert.pem')
-    key_path  = os.path.join(BASE_DIR, 'server-key.pem')
-    if not os.path.exists(cert_path) or not os.path.exists(key_path):
-        subprocess.run([
-            'openssl', 'req', '-x509', '-nodes', '-newkey', 'rsa:2048',
-            '-keyout', key_path,
-            '-out', cert_path,
-            '-days', '365',
-            '-subj', '/CN=localhost'
-        ], check=True)
-        # Reload in-memory SSLContext so new cert is used immediately
-        ssl_context.load_cert_chain(cert_path, key_path)
-    return cert_path, key_path
-
-@app.route('/api/generate_certs', methods=['POST'])
-def api_generate_certs():
-    try:
-        cert, key = generate_self_signed_cert()
-        return jsonify(status='ok', cert=cert, key=key), 200
-    except Exception as e:
-        logging.error(f"Cert generation error: {e}")
-        return jsonify({'status': 'error', 'message': str(e)}), 500
-
-@app.route('/download_cert', methods=['GET'])
-def download_cert():
-    cert_path = os.path.join(BASE_DIR, 'server-cert.pem')
-    if not os.path.exists(cert_path):
-        return jsonify({'status': 'error', 'message': 'Certificate not found'}), 404
-    return send_file(cert_path, as_attachment=True)
-
-
 
 # ----------------------
 
@@ -950,6 +914,7 @@ HTML_PAGE = '''
     }
     .drone-item.no-gps {
       position: relative;
+      border: 1px solid deepskyblue !important;
     }
     .drone-item.no-gps:hover::after {
       content: "no gps lock";
@@ -1596,27 +1561,41 @@ function showTerminalPopup(det, isNew) {
   } else {
     header = isNew ? 'New drone detected' : 'Previously seen non-aliased drone detected';
   }
-  const namePart = alias ? alias : '';
   const content = alias
     ? `${header} - RID:${rid} MAC:${det.mac}`
     : `${header} - RID:${rid} MAC:${det.mac}`;
-  popup.innerHTML = content;
-  // Add a "Zoom to Drone" button if drone coordinates exist
+  // Build popup HTML and button using new logic
+  // Build popup text
+  // (BEGIN PATCHED BUTTON & POPUP LOGIC)
+  // Build popup text
+  const isMobileBtn = window.innerWidth <= 600;
+  const headerDiv = `<div>${content}</div>`;
+  let buttonDiv = '';
   if (det.drone_lat && det.drone_long && det.drone_lat !== 0 && det.drone_long !== 0) {
-    const zoomBtn = document.createElement('button');
-    zoomBtn.textContent = 'Zoom to Drone';
-    // Style the button
-    zoomBtn.style.display = 'block';
-    zoomBtn.style.margin = '8px auto 0';         // space above and center horizontally
-    zoomBtn.style.padding = '4px 8px';           // inner padding
-    zoomBtn.style.border = '1px solid #FF00FF';  // neon pink border
-    zoomBtn.style.borderRadius = '6px';          // rounded edges
-    zoomBtn.style.background = 'transparent';
-    zoomBtn.style.color = 'lime';
-    zoomBtn.style.cursor = 'pointer';
-    zoomBtn.onclick = () => safeSetView([det.drone_lat, det.drone_long]);
-    popup.appendChild(zoomBtn);
+    const btnStyle = [
+      'display:block',
+      'width:100%',
+      'margin-top:4px',
+      'padding:' + (isMobileBtn ? '2px 0' : '4px 6px'),
+      'border:1px solid #FF00FF',
+      'border-radius:4px',
+      'background:transparent',
+      'color:lime',
+      'font-size:' + (isMobileBtn ? '0.8em' : '0.9em'),
+      'cursor:pointer'
+    ].join('; ');
+    buttonDiv = `<div><button id="zoomBtn" style="${btnStyle}">Zoom to Drone</button></div>`;
   }
+  popup.innerHTML = headerDiv + buttonDiv;
+  if (buttonDiv) {
+    const zoomBtn = popup.querySelector('#zoomBtn');
+    zoomBtn.addEventListener('click', () => {
+      zoomBtn.style.backgroundColor = 'purple';
+      setTimeout(() => { zoomBtn.style.backgroundColor = 'transparent'; }, 200);
+      safeSetView([det.drone_lat, det.drone_long]);
+    });
+  }
+  // (END PATCHED BUTTON & POPUP LOGIC)
 
   // --- Webhook logic (scoped, non-intrusive) ---
   try {
@@ -2466,6 +2445,7 @@ async function updateData() {
           }
         }
         // Remove automatic follow-zoom (except for followLock, which is allowed)
+        // (auto-zoom disabled except for followLock)
         if (followLock.enabled && followLock.type === 'drone' && followLock.id === mac) { map.setView([droneLat, droneLng], map.getZoom()); }
       }
       if (validPilot) {
@@ -2501,6 +2481,7 @@ async function updateData() {
         if (pilotPolylines[mac]) { map.removeLayer(pilotPolylines[mac]); }
         pilotPolylines[mac] = L.polyline(pilotPathCoords[mac], {color: color, dashArray: '5,5'}).addTo(map);
         // Remove automatic follow-zoom (except for followLock, which is allowed)
+        // (auto-zoom disabled except for followLock)
         if (followLock.enabled && followLock.type === 'pilot' && followLock.id === mac) { map.setView([pilotLat, pilotLng], map.getZoom()); }
       }
       // At end of loop iteration, remember this state for next time
@@ -2736,26 +2717,14 @@ def select_ports_post():
     for port in SELECTED_PORTS.values():
         serial_connected_status[port] = False
         start_serial_thread(port)
-
-    # Tear down any existing outgoing WSS clients
-
-    # Only connect to remote WSS servers if remote mode is enabled
-    if request.form.get('remoteToggle') == 'true':
-        count = int(request.form.get('remoteCount', '0'))
-        for i in range(1, count + 1):
-            url = request.form.get(f'remoteServer{i}', '').strip()
-            if not url:
-                continue
-            client = socketio_client.Client()
+    # Send watchdog reset to each microcontroller over USB
+    with serial_objs_lock:
+        for ser in serial_objs.values():
             try:
-                client.connect(
-                    url,
-                    transports=['websocket'],
-                    ssl_verify=False  # allow self-signed certs
-                )
-                remote_clients.append(client)
+                ser.write(b'WATCHDOG_RESET\n')
             except Exception as e:
-                logging.error(f"Failed to connect to remote WSS {url}: {e}")
+                logging.error(f"Failed to send watchdog reset: {e}")
+
 
     # Redirect to main page
     return redirect(url_for('index'))
