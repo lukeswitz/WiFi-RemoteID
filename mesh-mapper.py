@@ -17,35 +17,16 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from flask import Flask, request, jsonify, redirect, url_for, render_template, render_template_string, send_file
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-from flask_socketio import SocketIO
-import socketio as socketio_client
 
-# Outgoing WSS clients for forwarding detections to remote map servers
-remote_clients: List[socketio_client.Client] = []
 
 
 
 
 app = Flask(__name__)
 # Initialize Socket.IO for browser and peer-server synchronization
-socketio = SocketIO(app, async_mode='threading', cors_allowed_origins="*", logger=False, engineio_logger=False)
+
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-# Track connected peer servers
-peer_sids = set()
-
-@socketio.on('connect')
-def handle_connect():
-    peer_sids.add(flask_request.sid)
-
-@socketio.on('disconnect')
-def handle_disconnect():
-    peer_sids.discard(flask_request.sid)
-
-@socketio.on('detection')
-def handle_peer_detection(detection):
-    # Process incoming detection from a peer server
-    update_detection(detection)
 
 # ----------------------
 # Global Variables & Files
@@ -255,18 +236,8 @@ def update_detection(detection):
         print(f"No-GPS detection for {mac}; forwarding for popup and webhook.")
         # Forward this no-GPS detection to the client
         tracked_pairs[mac] = detection
-        # Broadcast this detection to all connected clients and peer servers
-        try:
-            socketio.emit('detection', detection, broadcast=True)
-        except Exception:
-            pass
-        # Forward this detection to any connected remote WSS servers
-        for client in remote_clients:
-            try:
-                client.emit('detection', detection)
-            except:
-                pass
         detection_history.append(detection.copy())
+        return
 
         # Write to session CSV
         with open(CSV_FILENAME, mode='a', newline='') as csvfile:
@@ -353,12 +324,6 @@ def update_detection(detection):
         socketio.emit('detection', detection, broadcast=True)
     except Exception:
         pass
-    # Forward this detection to any connected remote WSS servers
-    for client in remote_clients:
-        try:
-            client.emit('detection', detection)
-        except:
-            pass
     detection_history.append(detection.copy())
     print("Updated tracked_pairs:", tracked_pairs)
     with open(CSV_FILENAME, mode='a', newline='') as csvfile:
@@ -741,41 +706,6 @@ PORT_SELECTION_PAGE = '''
         Update Webhook
       </button>
     </div>
-    <!-- Remote Map Connection Toggle -->
-    <div style="margin-top:20px; display:flex; flex-direction:column; align-items:center;">
-      <label style="color:lime; font-family:monospace; margin-bottom:4px;">Remote Map Connection</label>
-      <label class="switch">
-        <input type="checkbox" id="remoteToggle">
-        <span class="slider"></span>
-      </label>
-      <div id="remoteSettings" style="display:none; margin-top:8px; padding:8px; border:1px solid #FF00FF; border-radius:5px;">
-        <label style="display:block; margin-bottom:4px; color:lime; font-family:monospace;">Number of Servers:</label>
-        <select id="remoteCount" style="background-color:#333; color:lime; border:1px solid lime; padding:4px;">
-          <option value="1">1</option>
-          <option value="2">2</option>
-          <option value="3">3</option>
-          <option value="4">4</option>
-          <option value="5">5</option>
-          <option value="6">6</option>
-          <option value="7">7</option>
-          <option value="8">8</option>
-          <option value="9">9</option>
-          <option value="10">10</option>
-        </select>
-        <div id="remoteInputs" style="margin-top:8px;"></div>
-        <!-- Certificate Generation & Download -->
-        <div style="margin-top:12px; text-align:center;">
-          <button id="generateCerts" type="button"
-                  style="border:1px solid lime; background-color:#333; color:lime; font-family:'Orbitron',monospace; padding:4px 8px; cursor:pointer; border-radius:5px; margin-right:6px;">
-            Generate Certificate
-          </button>
-          <button id="downloadCert" type="button"
-                  style="border:1px solid lime; background-color:#333; color:lime; font-family:'Orbitron',monospace; padding:4px 8px; cursor:pointer; border-radius:5px;">
-            Download Certificate
-          </button>
-        </div>
-      </div>
-    </div>
     <button id="beginMapping" type="submit" style="
         display: block;
         margin: 15px auto 0;
@@ -836,97 +766,6 @@ PORT_SELECTION_PAGE = '''
       console.log('Webhook URL updated to', url);
     });
 
-    // Remote map connections toggle logic
-    // Switch toggles settings panel and auto-generates cert
-    const remoteToggle = document.getElementById('remoteToggle');
-    const remoteSettings = document.getElementById('remoteSettings');
-    const generateCerts = document.getElementById('generateCerts');
-
-    remoteToggle.addEventListener('change', () => {
-      const checked = remoteToggle.checked;
-      remoteSettings.style.display = checked ? 'block' : 'none';
-      if (checked) {
-        // Auto-generate cert if toggled on
-        fetch('/api/generate_certs', { method: 'POST' })
-          .then(res => res.json())
-          .then(data => {
-            if (data.status === 'ok') {
-              generateCerts.textContent = 'Re-generate Certificate';
-            } else {
-              alert('Error generating certificate: ' + data.message);
-            }
-          })
-          .catch(err => alert('Error: ' + err));
-      }
-    });
-
-    // Manual certificate regeneration
-    document.getElementById('generateCerts').addEventListener('click', async () => {
-      try {
-        const res = await fetch('/api/generate_certs', { method: 'POST' });
-        const data = await res.json();
-        if (data.status === 'ok') {
-          alert('Certificate generated: ' + data.cert);
-          document.getElementById('generateCerts').textContent = 'Re-generate Certificate';
-        } else {
-          alert('Error generating certificate: ' + data.message);
-        }
-      } catch (err) {
-        alert('Error generating certificate: ' + err);
-      }
-    });
-
-    // Initialize switch and panel state
-    remoteSettings.style.display = 'none';
-    remoteToggle.checked = false;
-
-    const remoteCount = document.getElementById('remoteCount');
-    const remoteInputs = document.getElementById('remoteInputs');
-    function updateRemoteInputs() {
-      const count = parseInt(remoteCount.value, 10);
-      remoteInputs.innerHTML = '';
-      for (let i = 1; i <= count; i++) {
-        const input = document.createElement('input');
-        input.type = 'text';
-        input.placeholder = 'wss://server' + i;
-        input.style = 'width: 100%; background-color:#222; color:#87CEEB; border:1px solid #FF00FF; padding:4px; margin-bottom:6px; font-family:monospace;';
-        input.id = 'remoteServer' + i;
-        remoteInputs.appendChild(input);
-      }
-    }
-    remoteCount.addEventListener('change', updateRemoteInputs);
-    // Initialize on page load
-    updateRemoteInputs();
-    // Certificate download handler
-    document.getElementById('downloadCert').addEventListener('click', () => {
-      window.location.href = '/download_cert';
-    });
-
-    // Begin Mapping button logic (remote mode/cert check)
-    document.getElementById('beginMapping').addEventListener('click', async () => {
-        // If remote mode is on but no servers configured, disable and alert
-        const inputs = document.querySelectorAll('#remoteInputs input');
-        if (remoteToggle.checked) {
-          const anyFilled = Array.from(inputs).some(input => input.value.trim() !== '');
-          if (!anyFilled) {
-            alert('No remote servers selected. Defaulting to local-only mapping mode.');
-            remoteToggle.checked = false;
-            localStorage.setItem('remoteToggle', 'false');
-            remoteSettings.style.display = 'none';
-            // Proceed as simple mapping
-            document.querySelector('form').submit();
-            return;
-          }
-          // Generate certs for valid remote mode
-          const res = await fetch('/api/generate_certs', { method: 'POST' });
-          const data = await res.json();
-          if (data.status !== 'ok') {
-            return alert('Error generating certificate: ' + data.message);
-          }
-          localStorage.setItem('remoteToggle', 'true');
-        }
-        document.querySelector('form').submit();
-    });
   </script>
 </body>
 </html>
@@ -1512,26 +1351,6 @@ HTML_PAGE = '''
         <button id="downloadCumulativeKml">Cumulative KML</button>
       </div>
     </div>
-    <!-- Remote Map Connections Toggle -->
-    <div style="margin-top:20px; display:flex; flex-direction:column; align-items:center;">
-      <label style="color:lime; font-family:monospace; margin-bottom:4px;">Remote Map Connections</label>
-      <label class="switch">
-        <input type="checkbox" id="remoteToggle">
-        <span class="slider"></span>
-      </label>
-    </div>
-    <!-- Remote Map Connections Settings (initially hidden) -->
-    <div id="remoteSettings" style="display:none; margin-top:8px; padding:8px; border:1px solid #FF00FF; border-radius:5px;">
-      <label style="display:block; margin-bottom:4px; color:lime; font-family:monospace;">Number of Servers:</label>
-      <select id="remoteCount" style="background-color:#333; color:lime; border:1px solid lime; padding:4px;">
-        <option value="1">1</option>
-        <option value="2">2</option>
-        <option value="3">3</option>
-        <option value="4">4</option>
-        <option value="5">5</option>
-      </select>
-      <div id="remoteInputs" style="margin-top:8px;"></div>
-    </div>
     <!-- Node Mode block -->
     <div style="margin-top:8px; display:flex; flex-direction:column; align-items:center;">
       <label style="color:lime; font-family:monospace; margin-bottom:4px;">Node Mode</label>
@@ -1822,32 +1641,6 @@ function showTerminalPopup(det, isNew) {
     console.warn('Webhook logic skipped due to error', e);
   }
   // --- End webhook logic ---
-  // Remote map connections toggle logic
-  const remoteToggle = document.getElementById('remoteToggle');
-  const remoteSettings = document.getElementById('remoteSettings');
-  const remoteCount = document.getElementById('remoteCount');
-  const remoteInputs = document.getElementById('remoteInputs');
-
-  remoteToggle.addEventListener('change', () => {
-    remoteSettings.style.display = remoteToggle.checked ? 'block' : 'none';
-  });
-
-  function updateRemoteInputs() {
-    const count = parseInt(remoteCount.value, 10);
-    remoteInputs.innerHTML = '';
-    for (let i = 1; i <= count; i++) {
-      const input = document.createElement('input');
-      input.type = 'text';
-      input.placeholder = 'wss://server' + i;
-      input.style = 'width: 100%; background-color:#222; color:#87CEEB; border:1px solid #FF00FF; padding:4px; margin-bottom:6px; font-family:monospace;';
-      input.id = 'remoteServer' + i;
-      remoteInputs.appendChild(input);
-    }
-  }
-
-  remoteCount.addEventListener('change', updateRemoteInputs);
-  // Initialize on page load if needed
-  updateRemoteInputs();
 
   document.body.appendChild(popup);
 
@@ -2924,12 +2717,6 @@ def select_ports_post():
         start_serial_thread(port)
 
     # Tear down any existing outgoing WSS clients
-    for c in remote_clients:
-        try:
-            c.disconnect()
-        except:
-            pass
-    remote_clients.clear()
 
     # Only connect to remote WSS servers if remote mode is enabled
     if request.form.get('remoteToggle') == 'true':
@@ -3362,10 +3149,6 @@ HTML_TEMPLATE = '''
 def index():
     return HTML_TEMPLATE
 
-if __name__ == '__main__':
-    # SSL context for secure WebSocket (WSS) and HTTPS
-    ssl_context = ('/path/to/cert.pem', '/path/to/key.pem')
-    socketio.run(app, host='0.0.0.0', port=5000, ssl_context=ssl_context)
     
 # ----------------------
 # Webhook Proxy Endpoint
@@ -3405,4 +3188,4 @@ def webhook_popup():
 # __main__ SSLContext block
 # ----------------------
 if __name__ == '__main__':
-    socketio.run(app, host='0.0.0.0', port=5000)
+    app.run(host='0.0.0.0', port=5000, debug=True)
