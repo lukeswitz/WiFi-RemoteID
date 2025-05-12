@@ -1462,17 +1462,17 @@ document.getElementById("filterToggle").addEventListener("click", function() {
   this.textContent = isCollapsed ? "[+]" : "[-]";
   localStorage.setItem('filterCollapsed', isCollapsed);
 });
-// Optimize tile loading for smooth zoom and aggressive preloading
-L.Map.prototype.options.fadeAnimation = false;
+// Configure tile loading for smooth zoom transitions
+L.Map.prototype.options.fadeAnimation = true;
+L.Map.prototype.options.zoomAnimation = true;
 L.TileLayer.prototype.options.updateWhenZooming = true;
-L.TileLayer.prototype.options.updateInterval = 50;
-L.TileLayer.prototype.options.keepBuffer = 200;
-// Prevent tile unload and reuse cached tiles to eliminate blanking
-L.GridLayer.prototype.options.unloadInvisibleTiles = false;
-L.TileLayer.prototype.options.reuseTiles = true;
-L.TileLayer.prototype.options.updateWhenIdle = false;
-// Aggressively preload surrounding tiles during zoom
-L.TileLayer.prototype.options.preload = true;
+L.TileLayer.prototype.options.updateWhenIdle = true;
+// Use default tileSize for crisp rendering
+L.TileLayer.prototype.options.detectRetina = false;
+// Keep a moderate tile buffer for smoother panning
+L.TileLayer.prototype.options.keepBuffer = 50;
+// Disable aggressive preloading to avoid stutters
+L.TileLayer.prototype.options.preload = false;
 // On window load, restore persisted detection data (trackedPairs) and re-add markers.
 window.onload = function() {
   let stored = localStorage.getItem("trackedPairs");
@@ -1600,7 +1600,23 @@ function showTerminalPopup(det, isNew) {
   const content = alias
     ? `${header} - RID:${rid} MAC:${det.mac}`
     : `${header} - RID:${rid} MAC:${det.mac}`;
-  popup.textContent = content;
+  popup.innerHTML = content;
+  // Add a "Zoom to Drone" button if drone coordinates exist
+  if (det.drone_lat && det.drone_long && det.drone_lat !== 0 && det.drone_long !== 0) {
+    const zoomBtn = document.createElement('button');
+    zoomBtn.textContent = 'Zoom to Drone';
+    // Style the button
+    zoomBtn.style.display = 'block';
+    zoomBtn.style.margin = '8px auto 0';         // space above and center horizontally
+    zoomBtn.style.padding = '4px 8px';           // inner padding
+    zoomBtn.style.border = '1px solid #FF00FF';  // neon pink border
+    zoomBtn.style.borderRadius = '6px';          // rounded edges
+    zoomBtn.style.background = 'transparent';
+    zoomBtn.style.color = 'lime';
+    zoomBtn.style.cursor = 'pointer';
+    zoomBtn.onclick = () => safeSetView([det.drone_lat, det.drone_long]);
+    popup.appendChild(zoomBtn);
+  }
 
   // --- Webhook logic (scoped, non-intrusive) ---
   try {
@@ -2144,9 +2160,7 @@ if (navigator.geolocation) {
                         .addTo(map)
                         .on('popupopen', function() { updateObserverPopupButtons(); })
                         .on('click', function() { safeSetView(observerMarker.getLatLng(), 18); });
-      safeSetView([lat, lng], 18);
     } else { observerMarker.setLatLng([lat, lng]); }
-    if (followLock.enabled && followLock.type === 'observer') { map.setView([lat, lng], map.getZoom()); }
   }, function(error) { console.error("Error watching location:", error); }, { enableHighAccuracy: true, maximumAge: 10000, timeout: 5000 });
 } else { console.error("Geolocation is not supported by this browser."); }
 
@@ -2387,10 +2401,11 @@ async function updateData() {
       previousActive[mac] = activeNow;
 
       const validPilot = (pilotLat !== 0 && pilotLng !== 0);
-    // Allow popups after initial load completes
-    initialLoad = false;
+      // Allow popups after initial load completes
+      initialLoad = false;
       if (!validDrone && !validPilot) continue;
       const color = get_color_for_mac(mac);
+      // First detection zoom block (keep this block only)
       if (!initialLoad && !firstDetectionZoomed && validDrone) {
         firstDetectionZoomed = true;
         safeSetView([droneLat, droneLng], 18);
@@ -2406,7 +2421,9 @@ async function updateData() {
           })
                                 .bindPopup(generatePopupContent(det, 'drone'))
                                 .addTo(map)
-                                .on('click', function(){ map.setView(this.getLatLng(), map.getZoom()); });
+                                // Remove automatic zoom on marker click:
+                                //.on('click', function(){ map.setView(this.getLatLng(), map.getZoom()); });
+                                ;
         }
         if (droneCircles[mac]) { droneCircles[mac].setLatLng([droneLat, droneLng]); }
         else {
@@ -2448,6 +2465,7 @@ async function updateData() {
             delete droneBroadcastRings[mac];
           }
         }
+        // Remove automatic follow-zoom (except for followLock, which is allowed)
         if (followLock.enabled && followLock.type === 'drone' && followLock.id === mac) { map.setView([droneLat, droneLng], map.getZoom()); }
       }
       if (validPilot) {
@@ -2461,7 +2479,9 @@ async function updateData() {
           })
                                 .bindPopup(generatePopupContent(det, 'pilot'))
                                 .addTo(map)
-                                .on('click', function(){ map.setView(this.getLatLng(), map.getZoom()); });
+                                // Remove automatic zoom on marker click:
+                                //.on('click', function(){ map.setView(this.getLatLng(), map.getZoom()); });
+                                ;
         }
         if (pilotCircles[mac]) { pilotCircles[mac].setLatLng([pilotLat, pilotLng]); }
         else {
@@ -2480,6 +2500,7 @@ async function updateData() {
         if (!lastPilot || lastPilot[0] != pilotLat || lastPilot[1] != pilotLng) { pilotPathCoords[mac].push([pilotLat, pilotLng]); }
         if (pilotPolylines[mac]) { map.removeLayer(pilotPolylines[mac]); }
         pilotPolylines[mac] = L.polyline(pilotPathCoords[mac], {color: color, dashArray: '5,5'}).addTo(map);
+        // Remove automatic follow-zoom (except for followLock, which is allowed)
         if (followLock.enabled && followLock.type === 'pilot' && followLock.id === mac) { map.setView([pilotLat, pilotLng], map.getZoom()); }
       }
       // At end of loop iteration, remember this state for next time
