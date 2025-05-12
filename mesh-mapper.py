@@ -12,14 +12,40 @@ import serial
 import serial.tools.list_ports
 from datetime import datetime, timedelta
 from urllib.parse import urlparse
-from typing import Optional
+from typing import Optional, List
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from flask import Flask, request, jsonify, redirect, url_for, render_template, render_template_string, send_file
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+from flask_socketio import SocketIO
+import socketio as socketio_client
+
+# Outgoing WSS clients for forwarding detections to remote map servers
+remote_clients: List[socketio_client.Client] = []
+
+
+
 
 app = Flask(__name__)
+# Initialize Socket.IO for browser and peer-server synchronization
+socketio = SocketIO(app, async_mode='threading', cors_allowed_origins="*", logger=False, engineio_logger=False)
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+# Track connected peer servers
+peer_sids = set()
+
+@socketio.on('connect')
+def handle_connect():
+    peer_sids.add(flask_request.sid)
+
+@socketio.on('disconnect')
+def handle_disconnect():
+    peer_sids.discard(flask_request.sid)
+
+@socketio.on('detection')
+def handle_peer_detection(detection):
+    # Process incoming detection from a peer server
+    update_detection(detection)
 
 # ----------------------
 # Global Variables & Files
@@ -60,7 +86,7 @@ if not os.path.exists(CUMULATIVE_KML_FILENAME):
 # Write CSV header for detections.
 with open(CSV_FILENAME, mode='w', newline='') as csvfile:
     fieldnames = [
-        'timestamp', 'mac', 'alias', 'rssi', 'drone_lat', 'drone_long',
+        'timestamp', 'alias', 'mac', 'rssi', 'drone_lat', 'drone_long',
         'drone_altitude', 'pilot_lat', 'pilot_long', 'basic_id', 'faa_data'
     ]
     writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
@@ -72,7 +98,7 @@ CUMULATIVE_CSV_FILENAME = os.path.join(BASE_DIR, f"cumulative_detections.csv")
 if not os.path.exists(CUMULATIVE_CSV_FILENAME):
     with open(CUMULATIVE_CSV_FILENAME, mode='w', newline='') as csvfile:
         writer = csv.DictWriter(csvfile, fieldnames=[
-            'timestamp', 'mac', 'alias', 'rssi', 'drone_lat', 'drone_long',
+            'timestamp', 'alias', 'mac', 'rssi', 'drone_lat', 'drone_long',
             'drone_altitude', 'pilot_lat', 'pilot_long', 'basic_id', 'faa_data'
         ])
         writer.writeheader()
@@ -182,9 +208,11 @@ generate_kml()
 # Cumulative KML Append
 # ----------------------
 def append_to_cumulative_kml(mac, detection):
+    alias = ALIASES.get(mac, '')
+    aliasStr = f"{alias} " if alias else ""
     # Build placemark for drone position
     placemark = [
-        f"<Placemark><name>Drone {mac} {datetime.now().isoformat()}</name>",
+        f"<Placemark><name>Drone {aliasStr}{mac} {datetime.now().isoformat()}</name>",
         f"<Point><coordinates>{detection['drone_long']},{detection['drone_lat']},0</coordinates></Point>",
         "</Placemark>"
     ]
@@ -199,7 +227,7 @@ def append_to_cumulative_kml(mac, detection):
     # Also add pilot position
     if detection.get("pilot_lat") and detection.get("pilot_long"):
         placemark = [
-            f"<Placemark><name>Pilot {mac} {datetime.now().isoformat()}</name>",
+            f"<Placemark><name>Pilot {aliasStr}{mac} {datetime.now().isoformat()}</name>",
             f"<Point><coordinates>{detection['pilot_long']},{detection['pilot_lat']},0</coordinates></Point>",
             "</Placemark>"
         ]
@@ -223,9 +251,68 @@ def update_detection(detection):
     new_drone_long = detection.get("drone_long", 0)
     valid_drone = (new_drone_lat != 0 and new_drone_long != 0)
 
-    # If the new detection has invalid (0) drone coordinates, ignore it entirely
     if not valid_drone:
-        print(f"Ignored detection for {mac} because drone coordinates are zero.")
+        print(f"No-GPS detection for {mac}; forwarding for popup and webhook.")
+        # Forward this no-GPS detection to the client
+        tracked_pairs[mac] = detection
+        # Broadcast this detection to all connected clients and peer servers
+        try:
+            socketio.emit('detection', detection, broadcast=True)
+        except Exception:
+            pass
+        # Forward this detection to any connected remote WSS servers
+        for client in remote_clients:
+            try:
+                client.emit('detection', detection)
+            except:
+                pass
+        detection_history.append(detection.copy())
+
+        # Write to session CSV
+        with open(CSV_FILENAME, mode='a', newline='') as csvfile:
+            writer = csv.DictWriter(csvfile, fieldnames=[
+                'timestamp', 'alias', 'mac', 'rssi', 'drone_lat', 'drone_long',
+                'drone_altitude', 'pilot_lat', 'pilot_long', 'basic_id', 'faa_data'
+            ])
+            writer.writerow({
+                'timestamp': datetime.now().isoformat(),
+                'alias': ALIASES.get(mac, ''),
+                'mac': mac,
+                'rssi': detection.get('rssi', ''),
+                'drone_lat': detection.get('drone_lat', ''),
+                'drone_long': detection.get('drone_long', ''),
+                'drone_altitude': detection.get('drone_altitude', ''),
+                'pilot_lat': detection.get('pilot_lat', ''),
+                'pilot_long': detection.get('pilot_long', ''),
+                'basic_id': detection.get('basic_id', ''),
+                'faa_data': json.dumps(detection.get('faa_data', {}))
+            })
+
+        # Append to cumulative CSV
+        with open(CUMULATIVE_CSV_FILENAME, mode='a', newline='') as csvfile:
+            writer = csv.DictWriter(csvfile, fieldnames=[
+                'timestamp', 'alias', 'mac', 'rssi', 'drone_lat', 'drone_long',
+                'drone_altitude', 'pilot_lat', 'pilot_long', 'basic_id', 'faa_data'
+            ])
+            writer.writerow({
+                'timestamp': datetime.now().isoformat(),
+                'alias': ALIASES.get(mac, ''),
+                'mac': mac,
+                'rssi': detection.get('rssi', ''),
+                'drone_lat': detection.get('drone_lat', ''),
+                'drone_long': detection.get('drone_long', ''),
+                'drone_altitude': detection.get('drone_altitude', ''),
+                'pilot_lat': detection.get('pilot_lat', ''),
+                'pilot_long': detection.get('pilot_long', ''),
+                'basic_id': detection.get('basic_id', ''),
+                'faa_data': json.dumps(detection.get('faa_data', {}))
+            })
+
+        # Update KMLs
+        generate_kml()
+        append_to_cumulative_kml(mac, detection)
+
+        # Return so no map marker is created at 0,0
         return
 
     # Otherwise, use the provided non-zero coordinates.
@@ -261,17 +348,28 @@ def update_detection(detection):
             write_to_faa_cache(mac, detection.get("basic_id", ""), detection["faa_data"])
 
     tracked_pairs[mac] = detection
+    # Broadcast this detection to all connected clients and peer servers
+    try:
+        socketio.emit('detection', detection, broadcast=True)
+    except Exception:
+        pass
+    # Forward this detection to any connected remote WSS servers
+    for client in remote_clients:
+        try:
+            client.emit('detection', detection)
+        except:
+            pass
     detection_history.append(detection.copy())
     print("Updated tracked_pairs:", tracked_pairs)
     with open(CSV_FILENAME, mode='a', newline='') as csvfile:
         writer = csv.DictWriter(csvfile, fieldnames=[
-            'timestamp', 'mac', 'alias', 'rssi', 'drone_lat', 'drone_long',
+            'timestamp', 'alias', 'mac', 'rssi', 'drone_lat', 'drone_long',
             'drone_altitude', 'pilot_lat', 'pilot_long', 'basic_id', 'faa_data'
         ])
         writer.writerow({
             'timestamp': datetime.now().isoformat(),
-            'mac': mac,
             'alias': ALIASES.get(mac, ''),
+            'mac': mac,
             'rssi': detection.get('rssi', ''),
             'drone_lat': detection.get('drone_lat', ''),
             'drone_long': detection.get('drone_long', ''),
@@ -284,13 +382,13 @@ def update_detection(detection):
     # Append to cumulative CSV
     with open(CUMULATIVE_CSV_FILENAME, mode='a', newline='') as csvfile:
         writer = csv.DictWriter(csvfile, fieldnames=[
-            'timestamp', 'mac', 'alias', 'rssi', 'drone_lat', 'drone_long',
+            'timestamp', 'alias', 'mac', 'rssi', 'drone_lat', 'drone_long',
             'drone_altitude', 'pilot_lat', 'pilot_long', 'basic_id', 'faa_data'
         ])
         writer.writerow({
             'timestamp': datetime.now().isoformat(),
-            'mac': mac,
             'alias': ALIASES.get(mac, ''),
+            'mac': mac,
             'rssi': detection.get('rssi', ''),
             'drone_lat': detection.get('drone_lat', ''),
             'drone_long': detection.get('drone_long', ''),
@@ -427,6 +525,7 @@ def api_query_faa():
 # ----------------------
 # FAA Data GET API Endpoint (by MAC or basic_id)
 # ----------------------
+
 @app.route('/api/faa/<identifier>', methods=['GET'])
 def api_get_faa(identifier):
     """
@@ -449,6 +548,45 @@ def api_get_faa(identifier):
     return jsonify({'status': 'error', 'message': 'No FAA data found for this identifier'}), 404
 
 
+# ----------------------
+# Certificate Generation & Download Endpoints
+# ----------------------
+
+def generate_self_signed_cert():
+    cert_path = os.path.join(BASE_DIR, 'server-cert.pem')
+    key_path  = os.path.join(BASE_DIR, 'server-key.pem')
+    if not os.path.exists(cert_path) or not os.path.exists(key_path):
+        subprocess.run([
+            'openssl', 'req', '-x509', '-nodes', '-newkey', 'rsa:2048',
+            '-keyout', key_path,
+            '-out', cert_path,
+            '-days', '365',
+            '-subj', '/CN=localhost'
+        ], check=True)
+        # Reload in-memory SSLContext so new cert is used immediately
+        ssl_context.load_cert_chain(cert_path, key_path)
+    return cert_path, key_path
+
+@app.route('/api/generate_certs', methods=['POST'])
+def api_generate_certs():
+    try:
+        cert, key = generate_self_signed_cert()
+        return jsonify(status='ok', cert=cert, key=key), 200
+    except Exception as e:
+        logging.error(f"Cert generation error: {e}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+@app.route('/download_cert', methods=['GET'])
+def download_cert():
+    cert_path = os.path.join(BASE_DIR, 'server-cert.pem')
+    if not os.path.exists(cert_path):
+        return jsonify({'status': 'error', 'message': 'Certificate not found'}), 404
+    return send_file(cert_path, as_attachment=True)
+
+
+
+# ----------------------
+
 
 # ----------------------
 # HTML & JS (UI) Section
@@ -462,6 +600,12 @@ PORT_SELECTION_PAGE = '''
   <title>Select USB Serial Ports</title>
   <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700&display=swap" rel="stylesheet">
   <style>
+    /* Highlight non-GPS drones in inactive list */
+    #inactivePlaceholder .drone-item.no-gps {
+      border: 2px solid lightblue !important;
+      background-color: transparent !important;
+      color: inherit !important;
+    }
     .leaflet-tile {
       border: none !important;
       box-shadow: none !important;
@@ -528,6 +672,37 @@ PORT_SELECTION_PAGE = '''
       font-family: 'Orbitron', monospace;
       margin: 1em 0 4px 0;
     }
+    /* Rounded toggle switch styling */
+    .switch {
+      position: relative; display: inline-block; width: 40px; height: 20px;
+    }
+    .switch input {
+      opacity: 0; width: 0; height: 0;
+    }
+    .switch .slider {
+      position: absolute;
+      cursor: pointer;
+      top: 0; left: 0; right: 0; bottom: 0;
+      background-color: #555;
+      transition: .4s;
+      border-radius: 20px;
+    }
+    .switch .slider:before {
+      position: absolute;
+      content: "";
+      height: 16px; width: 16px;
+      left: 2px; top: 2px;
+      background-color: lime;
+      border: 1px solid #9B30FF;
+      transition: .4s;
+      border-radius: 50%;
+    }
+    .switch input:checked + .slider {
+      background-color: lime;
+    }
+    .switch input:checked + .slider:before {
+      transform: translateX(20px);
+    }
   </style>
 </head>
 <body>
@@ -555,20 +730,55 @@ PORT_SELECTION_PAGE = '''
         <option value="{{ port.device }}">{{ port.device }} - {{ port.description }}</option>
       {% endfor %}
     </select><br>
-    <div style="margin-bottom:12px;"></div>
-    <div style="margin-top:5px; margin-bottom:6px; text-align:center;">
+    <div style="margin-bottom:8px;"></div>
+    <div style="margin-top:4px; margin-bottom:4px; text-align:center;">
       <label for="webhookUrl" style="font-size:18px; font-family:'Orbitron', monospace; color:#87CEEB;">Webhook URL</label><br>
-      <input type="text" id="webhookUrl" placeholder="httpsdvvdvv://example.com/webhook"
+      <input type="text" id="webhookUrl" placeholder="https://example.com/webhook"
              style="width:300px; background-color:#222; color:#87CEEB; border:1px solid #FF00FF; padding:4px; font-size:1em; outline:none;">
     </div>
-    <div style="margin-top:6px; margin-bottom:6px; text-align:center;">
+    <div style="margin-top:4px; margin-bottom:4px; text-align:center;">
       <button id="updateWebhookButton" style="border:1px solid lime; background-color:#333; color:#FF00FF; font-family:'Orbitron',monospace; padding:4px 8px; cursor:pointer; border-radius:4px;">
         Update Webhook
       </button>
     </div>
+    <!-- Remote Map Connection Toggle -->
+    <div style="margin-top:20px; display:flex; flex-direction:column; align-items:center;">
+      <label style="color:lime; font-family:monospace; margin-bottom:4px;">Remote Map Connection</label>
+      <label class="switch">
+        <input type="checkbox" id="remoteToggle">
+        <span class="slider"></span>
+      </label>
+      <div id="remoteSettings" style="display:none; margin-top:8px; padding:8px; border:1px solid #FF00FF; border-radius:5px;">
+        <label style="display:block; margin-bottom:4px; color:lime; font-family:monospace;">Number of Servers:</label>
+        <select id="remoteCount" style="background-color:#333; color:lime; border:1px solid lime; padding:4px;">
+          <option value="1">1</option>
+          <option value="2">2</option>
+          <option value="3">3</option>
+          <option value="4">4</option>
+          <option value="5">5</option>
+          <option value="6">6</option>
+          <option value="7">7</option>
+          <option value="8">8</option>
+          <option value="9">9</option>
+          <option value="10">10</option>
+        </select>
+        <div id="remoteInputs" style="margin-top:8px;"></div>
+        <!-- Certificate Generation & Download -->
+        <div style="margin-top:12px; text-align:center;">
+          <button id="generateCerts" type="button"
+                  style="border:1px solid lime; background-color:#333; color:lime; font-family:'Orbitron',monospace; padding:4px 8px; cursor:pointer; border-radius:5px; margin-right:6px;">
+            Generate Certificate
+          </button>
+          <button id="downloadCert" type="button"
+                  style="border:1px solid lime; background-color:#333; color:lime; font-family:'Orbitron',monospace; padding:4px 8px; cursor:pointer; border-radius:5px;">
+            Download Certificate
+          </button>
+        </div>
+      </div>
+    </div>
     <button id="beginMapping" type="submit" style="
         display: block;
-        margin: 20px auto 0;
+        margin: 15px auto 0;
         padding: 8px 15px;
         min-width: 150px;
         border: 1px solid lime;
@@ -581,7 +791,7 @@ PORT_SELECTION_PAGE = '''
     ">
       Begin Mapping
     </button>
-    <div style="margin-bottom:12px;"></div>
+    <div style="margin-bottom:8px;"></div>
   </form>
   <pre class="ascii-art">{{ bottom_ascii }}</pre>
   <script>
@@ -624,6 +834,98 @@ PORT_SELECTION_PAGE = '''
       const url = document.getElementById('webhookUrl').value.trim();
       localStorage.setItem('popupWebhookUrl', url);
       console.log('Webhook URL updated to', url);
+    });
+
+    // Remote map connections toggle logic
+    // Switch toggles settings panel and auto-generates cert
+    const remoteToggle = document.getElementById('remoteToggle');
+    const remoteSettings = document.getElementById('remoteSettings');
+    const generateCerts = document.getElementById('generateCerts');
+
+    remoteToggle.addEventListener('change', () => {
+      const checked = remoteToggle.checked;
+      remoteSettings.style.display = checked ? 'block' : 'none';
+      if (checked) {
+        // Auto-generate cert if toggled on
+        fetch('/api/generate_certs', { method: 'POST' })
+          .then(res => res.json())
+          .then(data => {
+            if (data.status === 'ok') {
+              generateCerts.textContent = 'Re-generate Certificate';
+            } else {
+              alert('Error generating certificate: ' + data.message);
+            }
+          })
+          .catch(err => alert('Error: ' + err));
+      }
+    });
+
+    // Manual certificate regeneration
+    document.getElementById('generateCerts').addEventListener('click', async () => {
+      try {
+        const res = await fetch('/api/generate_certs', { method: 'POST' });
+        const data = await res.json();
+        if (data.status === 'ok') {
+          alert('Certificate generated: ' + data.cert);
+          document.getElementById('generateCerts').textContent = 'Re-generate Certificate';
+        } else {
+          alert('Error generating certificate: ' + data.message);
+        }
+      } catch (err) {
+        alert('Error generating certificate: ' + err);
+      }
+    });
+
+    // Initialize switch and panel state
+    remoteSettings.style.display = 'none';
+    remoteToggle.checked = false;
+
+    const remoteCount = document.getElementById('remoteCount');
+    const remoteInputs = document.getElementById('remoteInputs');
+    function updateRemoteInputs() {
+      const count = parseInt(remoteCount.value, 10);
+      remoteInputs.innerHTML = '';
+      for (let i = 1; i <= count; i++) {
+        const input = document.createElement('input');
+        input.type = 'text';
+        input.placeholder = 'wss://server' + i;
+        input.style = 'width: 100%; background-color:#222; color:#87CEEB; border:1px solid #FF00FF; padding:4px; margin-bottom:6px; font-family:monospace;';
+        input.id = 'remoteServer' + i;
+        remoteInputs.appendChild(input);
+      }
+    }
+    remoteCount.addEventListener('change', updateRemoteInputs);
+    // Initialize on page load
+    updateRemoteInputs();
+    // Certificate download handler
+    document.getElementById('downloadCert').addEventListener('click', () => {
+      window.location.href = '/download_cert';
+    });
+
+    // Begin Mapping button logic (remote mode/cert check)
+    document.getElementById('beginMapping').addEventListener('click', async () => {
+        // If remote mode is on but no servers configured, disable and alert
+        const inputs = document.querySelectorAll('#remoteInputs input');
+        if (remoteToggle.checked) {
+          const anyFilled = Array.from(inputs).some(input => input.value.trim() !== '');
+          if (!anyFilled) {
+            alert('No remote servers selected. Defaulting to local-only mapping mode.');
+            remoteToggle.checked = false;
+            localStorage.setItem('remoteToggle', 'false');
+            remoteSettings.style.display = 'none';
+            // Proceed as simple mapping
+            document.querySelector('form').submit();
+            return;
+          }
+          // Generate certs for valid remote mode
+          const res = await fetch('/api/generate_certs', { method: 'POST' });
+          const data = await res.json();
+          if (data.status !== 'ok') {
+            return alert('Error generating certificate: ' + data.message);
+          }
+          localStorage.setItem('remoteToggle', 'true');
+        }
+        document.querySelector('form').submit();
     });
   </script>
 </body>
@@ -811,15 +1113,16 @@ HTML_PAGE = '''
       position: relative;
     }
     .drone-item.no-gps:hover::after {
-      content: attr(data-tooltip);
+      content: "no gps lock";
       position: absolute;
       bottom: 100%;
       left: 50%;
       transform: translateX(-50%);
-      background: black;
-      color: #00FF00;
-      padding: 2px 4px;
-      border-radius: 3px;
+      background-color: black;
+      color: #FF00FF;               /* neon pink text */
+      padding: 4px 6px;
+      border: 1px solid #FF00FF;    /* neon pink border */
+      border-radius: 2px;
       white-space: nowrap;
       font-family: monospace;
       font-size: 0.75em;
@@ -1209,6 +1512,26 @@ HTML_PAGE = '''
         <button id="downloadCumulativeKml">Cumulative KML</button>
       </div>
     </div>
+    <!-- Remote Map Connections Toggle -->
+    <div style="margin-top:20px; display:flex; flex-direction:column; align-items:center;">
+      <label style="color:lime; font-family:monospace; margin-bottom:4px;">Remote Map Connections</label>
+      <label class="switch">
+        <input type="checkbox" id="remoteToggle">
+        <span class="slider"></span>
+      </label>
+    </div>
+    <!-- Remote Map Connections Settings (initially hidden) -->
+    <div id="remoteSettings" style="display:none; margin-top:8px; padding:8px; border:1px solid #FF00FF; border-radius:5px;">
+      <label style="display:block; margin-bottom:4px; color:lime; font-family:monospace;">Number of Servers:</label>
+      <select id="remoteCount" style="background-color:#333; color:lime; border:1px solid lime; padding:4px;">
+        <option value="1">1</option>
+        <option value="2">2</option>
+        <option value="3">3</option>
+        <option value="4">4</option>
+        <option value="5">5</option>
+      </select>
+      <div id="remoteInputs" style="margin-top:8px;"></div>
+    </div>
     <!-- Node Mode block -->
     <div style="margin-top:8px; display:flex; flex-direction:column; align-items:center;">
       <label style="color:lime; font-family:monospace; margin-bottom:4px;">Node Mode</label>
@@ -1226,6 +1549,8 @@ HTML_PAGE = '''
   <!-- USB port statuses will be injected here -->
 </div>
 <script>
+  // Track drones already alerted for no GPS
+  const alertedNoGpsDrones = new Set();
   // Round tile positions to integer pixels to eliminate seams
   L.DomUtil.setPosition = (function() {
     var original = L.DomUtil.setPosition;
@@ -1497,6 +1822,32 @@ function showTerminalPopup(det, isNew) {
     console.warn('Webhook logic skipped due to error', e);
   }
   // --- End webhook logic ---
+  // Remote map connections toggle logic
+  const remoteToggle = document.getElementById('remoteToggle');
+  const remoteSettings = document.getElementById('remoteSettings');
+  const remoteCount = document.getElementById('remoteCount');
+  const remoteInputs = document.getElementById('remoteInputs');
+
+  remoteToggle.addEventListener('change', () => {
+    remoteSettings.style.display = remoteToggle.checked ? 'block' : 'none';
+  });
+
+  function updateRemoteInputs() {
+    const count = parseInt(remoteCount.value, 10);
+    remoteInputs.innerHTML = '';
+    for (let i = 1; i <= count; i++) {
+      const input = document.createElement('input');
+      input.type = 'text';
+      input.placeholder = 'wss://server' + i;
+      input.style = 'width: 100%; background-color:#222; color:#87CEEB; border:1px solid #FF00FF; padding:4px; margin-bottom:6px; font-family:monospace;';
+      input.id = 'remoteServer' + i;
+      remoteInputs.appendChild(input);
+    }
+  }
+
+  remoteCount.addEventListener('change', updateRemoteInputs);
+  // Initialize on page load if needed
+  updateRemoteInputs();
 
   document.body.appendChild(popup);
 
@@ -2346,6 +2697,25 @@ async function updateData() {
     updateAliases();
     // Mark that the first restore/update is done
     initialLoad = false;
+
+    // Handle no-GPS styling and alerts in the inactive list
+    for (const mac in data) {
+      const det = data[mac];
+      const droneElem = comboListItems[mac];
+      if (!droneElem) continue;
+      if (!det.drone_lat || !det.drone_long || det.drone_lat === 0 || det.drone_long === 0) {
+        // Apply no-GPS styling and one-time alert
+        droneElem.classList.add('no-gps');
+        if (!alertedNoGpsDrones.has(det.mac)) {
+          showTerminalPopup(det, true);
+          alertedNoGpsDrones.add(det.mac);
+        }
+      } else {
+        // Remove no-GPS styling and reset alert state
+        droneElem.classList.remove('no-gps');
+        alertedNoGpsDrones.delete(det.mac);
+      }
+    }
   } catch (error) { console.error("Error fetching detection data:", error); }
 }
 
@@ -2553,6 +2923,31 @@ def select_ports_post():
         serial_connected_status[port] = False
         start_serial_thread(port)
 
+    # Tear down any existing outgoing WSS clients
+    for c in remote_clients:
+        try:
+            c.disconnect()
+        except:
+            pass
+    remote_clients.clear()
+
+    # Only connect to remote WSS servers if remote mode is enabled
+    if request.form.get('remoteToggle') == 'true':
+        count = int(request.form.get('remoteCount', '0'))
+        for i in range(1, count + 1):
+            url = request.form.get(f'remoteServer{i}', '').strip()
+            if not url:
+                continue
+            client = socketio_client.Client()
+            try:
+                client.connect(
+                    url,
+                    transports=['websocket'],
+                    ssl_verify=False  # allow self-signed certs
+                )
+                remote_clients.append(client)
+            except Exception as e:
+                logging.error(f"Failed to connect to remote WSS {url}: {e}")
 
     # Redirect to main page
     return redirect(url_for('index'))
@@ -2968,7 +3363,9 @@ def index():
     return HTML_TEMPLATE
 
 if __name__ == '__main__':
-    app.run(debug=True, port=5000)
+    # SSL context for secure WebSocket (WSS) and HTTPS
+    ssl_context = ('/path/to/cert.pem', '/path/to/key.pem')
+    socketio.run(app, host='0.0.0.0', port=5000, ssl_context=ssl_context)
     
 # ----------------------
 # Webhook Proxy Endpoint
@@ -3004,3 +3401,8 @@ def webhook_popup():
     except Exception as e:
         logging.error(f"Webhook send error: {e}")
         return jsonify({"status": "error", "message": str(e)}), 500
+# ----------------------
+# __main__ SSLContext block
+# ----------------------
+if __name__ == '__main__':
+    socketio.run(app, host='0.0.0.0', port=5000)
