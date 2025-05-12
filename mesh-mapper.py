@@ -704,11 +704,11 @@ PORT_SELECTION_PAGE = '''
         })
         .catch(err => console.error('Error refreshing ports:', err));
     }
-    var refreshInterval = setInterval(refreshPortOptions, 500);
+    var refreshInterval = setInterval(refreshPortOptions, 2000);
     ['port1','port2','port3'].forEach(function(name) {
       var select = document.getElementById(name);
       if (select) {
-        ['focus', 'mousedown', 'touchstart'].forEach(function(evt) {
+        ['focus', 'mousedown'].forEach(function(evt) {
           select.addEventListener(evt, function() { clearInterval(refreshInterval); });
         });
         select.addEventListener('change', function() { clearInterval(refreshInterval); });
