@@ -27,7 +27,7 @@
 
 ---
 > [!NOTE]
-> MeshDetect kits use an esp32c3. Dual core firmware is for esp32s3 due to memory capacity restrictions.
+> MeshDetect kits use an SeedStudio Xiao esp32-s3 for dual remoteID scanning
 
 ---
 
@@ -68,7 +68,7 @@
 ## How to Connect and Map 🚀
 
 1. **Connect Your ESP32:**
-   - Flash the provided firmware onto your ESP32 (compatible with boards like the Xiao ESP32-C3).
+   - Flash the provided firmware onto your ESP32 (compatible with boards like the Xiao ESP32-S3).
    - Connect the ESP32 to your computer via USB.
 
 2. **Start the Flask API:**
