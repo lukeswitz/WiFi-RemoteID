@@ -428,22 +428,6 @@ def query_remote_id(session, remote_id):
         logging.exception("Error querying FAA API: %s", e)
         return None
 
-# ----------------------
-# Webhook popup API Endpoint 
-# ----------------------
-@app.route('/api/webhook_popup', methods=['POST'])
-def webhook_popup():
-    data = request.get_json()
-    webhook_url = data.get("webhook_url")
-    if not webhook_url:
-        return jsonify({"status": "error", "reason": "No webhook URL provided"}), 400
-    try:
-        clean_data = data.get("payload", {})
-        response = requests.post(webhook_url, json=clean_data, timeout=5)
-        return jsonify({"status": "ok", "response": response.status_code}), 200
-    except Exception as e:
-        logging.error(f"Webhook send error: {e}")
-        return jsonify({"status": "error", "message": str(e)}), 500
 
 # ----------------------
 # New FAA Query API Endpoint
@@ -951,6 +935,11 @@ HTML_PAGE = '''
       max-width: 220px;
       zoom: 1.15;
     }
+    /* Reduced side padding for alias popups */
+    .leaflet-popup-content-wrapper.alias-popup {
+      padding-left: 4px !important;
+      padding-right: 4px !important;
+    }
     .leaflet-popup-content {
       font-size: 0.75em;
       line-height: 1.2em;
@@ -1333,6 +1322,13 @@ HTML_PAGE = '''
   <!-- USB port statuses will be injected here -->
 </div>
 <script>
+  // Prevent alerts and webhooks from refiring on page reload
+  let skipAlerts = false;
+  if (sessionStorage.getItem('appLoaded')) {
+    skipAlerts = true;
+  } else {
+    sessionStorage.setItem('appLoaded', 'true');
+  }
   // Track drones already alerted for no GPS
   const alertedNoGpsDrones = new Set();
   // Round tile positions to integer pixels to eliminate seams
@@ -1522,6 +1518,7 @@ function safeSetView(latlng, zoom=18) {
 
 // Transient terminal-style popup for drone events
 function showTerminalPopup(det, isNew) {
+  if (skipAlerts) return;
   // Remove any existing popup
   const old = document.getElementById('dronePopup');
   if (old) old.remove();
@@ -1598,6 +1595,7 @@ function showTerminalPopup(det, isNew) {
   // (END PATCHED BUTTON & POPUP LOGIC)
 
   // --- Webhook logic (scoped, non-intrusive) ---
+  if (skipAlerts) return;
   try {
     const webhookUrl = localStorage.getItem('popupWebhookUrl');
     if (webhookUrl && webhookUrl.startsWith("http")) {
@@ -1911,15 +1909,20 @@ function updateMarkerButtons(markerType, id) {
 function openAliasPopup(mac) {
   let detection = window.tracked_pairs[mac] || {};
   let content = generatePopupContent(Object.assign({mac: mac}, detection), 'alias');
+
+  // Helper to force closeButton and our alias-popup class
+  function showAliasPopup(marker) {
+    marker.unbindPopup();
+    marker.bindPopup(content, {
+      closeButton: true,
+      className: 'leaflet-popup-content-wrapper alias-popup'
+    }).openPopup();
+  }
+
   if (droneMarkers[mac]) {
-    droneMarkers[mac].setPopupContent(content).openPopup();
+    showAliasPopup(droneMarkers[mac]);
   } else if (pilotMarkers[mac]) {
-    pilotMarkers[mac].setPopupContent(content).openPopup();
-  } else {
-    L.popup({className: 'leaflet-popup-content-wrapper'})
-      .setLatLng(map.getCenter())
-      .setContent(content)
-      .openOn(map);
+    showAliasPopup(pilotMarkers[mac]);
   }
 }
 
@@ -2996,7 +2999,8 @@ def download_cumulative_kml():
     )
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000)
+    # Disable the Werkzeug reloader to avoid Bad file descriptor errors
+    app.run(host='0.0.0.0', port=5000, debug=True, use_reloader=False)
 
 
 app = Flask(__name__)
@@ -3140,42 +3144,3 @@ def index():
     return HTML_TEMPLATE
 
     
-# ----------------------
-# Webhook Proxy Endpoint
-# ----------------------
-
-# This endpoint a
-# accepts a POST with a "webhook_url" and relays the payload to the specified webhook URL.
-@app.route('/api/webhook_popup', methods=['POST'])
-def webhook_popup():
-    data = request.get_json()
-    webhook_url = data.get("webhook_url")
-    if not webhook_url:
-        return jsonify({"status": "error", "reason": "No webhook URL provided"}), 400
-    try:
-        response = requests.post(webhook_url, json=data, timeout=5)
-        return jsonify({"status": "ok", "response": response.status_code}), 200
-    except Exception as e:
-        logging.error(f"Webhook send error: {e}")
-        return jsonify({"status": "error", "message": str(e)}), 500
-# ----------------------
-# Webhook Relay Endpoint
-# ----------------------
-@app.route('/api/webhook_popup', methods=['POST'])
-def webhook_popup():
-    data = request.get_json()
-    webhook_url = data.get("webhook_url")
-    if not webhook_url:
-        return jsonify({"status": "error", "reason": "No webhook URL provided"}), 400
-    try:
-        clean_data = data.get("payload", {})
-        response = requests.post(webhook_url, json=clean_data, timeout=5)
-        return jsonify({"status": "ok", "response": response.status_code}), 200
-    except Exception as e:
-        logging.error(f"Webhook send error: {e}")
-        return jsonify({"status": "error", "message": str(e)}), 500
-# ----------------------
-# __main__ SSLContext block
-# ----------------------
-if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000, debug=True)
