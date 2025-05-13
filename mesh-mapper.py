@@ -916,6 +916,20 @@ HTML_PAGE = '''
       font-size: 0.75em;
       z-index: 2000;
     }
+
+    /* Tooltip for inactive no-GPS drones */
+    .inactive-tooltip {
+      position: absolute;
+      background: rgba(0, 0, 0, 0.9);
+      color: lime;
+      font-family: monospace;
+      font-size: 0.8em;
+      padding: 6px 8px;
+      border: 1px solid lime;
+      border-radius: 4px;
+      z-index: 10000;
+      white-space: nowrap;
+    }
     /* Highlight recently seen drones */
     .drone-item.recent {
       box-shadow: 0 0 0 1px lime;
@@ -2310,6 +2324,27 @@ function updateComboList(data) {
       if (item.parentNode !== activePlaceholder) { activePlaceholder.appendChild(item); }
     } else {
       if (item.parentNode !== inactivePlaceholder) { inactivePlaceholder.appendChild(item); }
+      // Tooltip on hover for no-GPS drones
+      item.addEventListener('mouseenter', () => {
+        const det = data[mac];
+        const tooltip = document.createElement('div');
+        tooltip.className = 'inactive-tooltip';
+        tooltip.innerHTML = `
+          <strong>MAC:</strong> ${det.mac}<br>
+          <strong>Alias:</strong> ${aliases[mac] || 'None'}<br>
+          <strong>RSSI:</strong> ${det.rssi || 'N/A'}<br>
+          <strong>Basic ID:</strong> ${det.basic_id || 'N/A'}<br>
+          <strong>Pilot Lat/Long:</strong> ${det.pilot_lat || 'N/A'}, ${det.pilot_long || 'N/A'}<br>
+          <strong>FAA Data:</strong> ${det.faa_data ? JSON.stringify(det.faa_data) : 'N/A'}
+        `;
+        document.body.appendChild(tooltip);
+        const rect = item.getBoundingClientRect();
+        tooltip.style.top  = (rect.bottom + window.scrollY + 4) + 'px';
+        tooltip.style.left = (rect.left   + window.scrollX) + 'px';
+      });
+      item.addEventListener('mouseleave', () => {
+        document.querySelectorAll('.inactive-tooltip').forEach(t => t.remove());
+      });
     }
   });
 }
