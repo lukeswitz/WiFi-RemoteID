@@ -3174,8 +3174,5 @@ def webhook_popup():
     except Exception as e:
         logging.error(f"Webhook send error: {e}")
         return jsonify({"status": "error", "message": str(e)}), 500
-# ----------------------
-# __main__ SSLContext block
-# ----------------------
-if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000, debug=True)
+
+
