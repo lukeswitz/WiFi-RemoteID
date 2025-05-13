@@ -428,6 +428,22 @@ def query_remote_id(session, remote_id):
         logging.exception("Error querying FAA API: %s", e)
         return None
 
+# ----------------------
+# Webhook popup API Endpoint 
+# ----------------------
+@app.route('/api/webhook_popup', methods=['POST'])
+def webhook_popup():
+    data = request.get_json()
+    webhook_url = data.get("webhook_url")
+    if not webhook_url:
+        return jsonify({"status": "error", "reason": "No webhook URL provided"}), 400
+    try:
+        clean_data = data.get("payload", {})
+        response = requests.post(webhook_url, json=clean_data, timeout=5)
+        return jsonify({"status": "ok", "response": response.status_code}), 200
+    except Exception as e:
+        logging.error(f"Webhook send error: {e}")
+        return jsonify({"status": "error", "message": str(e)}), 500
 
 # ----------------------
 # New FAA Query API Endpoint
@@ -916,20 +932,6 @@ HTML_PAGE = '''
       font-size: 0.75em;
       z-index: 2000;
     }
-
-    /* Tooltip for inactive no-GPS drones */
-    .inactive-tooltip {
-      position: absolute;
-      background: rgba(0, 0, 0, 0.9);
-      color: lime;
-      font-family: monospace;
-      font-size: 0.8em;
-      padding: 6px 8px;
-      border: 1px solid lime;
-      border-radius: 4px;
-      z-index: 10000;
-      white-space: nowrap;
-    }
     /* Highlight recently seen drones */
     .drone-item.recent {
       box-shadow: 0 0 0 1px lime;
@@ -948,11 +950,6 @@ HTML_PAGE = '''
       width: 220px !important;
       max-width: 220px;
       zoom: 1.15;
-    }
-    /* Reduced side padding for alias popups */
-    .leaflet-popup-content-wrapper.alias-popup {
-      padding-left: 4px !important;
-      padding-right: 4px !important;
     }
     .leaflet-popup-content {
       font-size: 0.75em;
@@ -1336,13 +1333,6 @@ HTML_PAGE = '''
   <!-- USB port statuses will be injected here -->
 </div>
 <script>
-  // Prevent alerts and webhooks from refiring on page reload
-  let skipAlerts = false;
-  if (sessionStorage.getItem('appLoaded')) {
-    skipAlerts = true;
-  } else {
-    sessionStorage.setItem('appLoaded', 'true');
-  }
   // Track drones already alerted for no GPS
   const alertedNoGpsDrones = new Set();
   // Round tile positions to integer pixels to eliminate seams
@@ -1532,7 +1522,6 @@ function safeSetView(latlng, zoom=18) {
 
 // Transient terminal-style popup for drone events
 function showTerminalPopup(det, isNew) {
-  if (skipAlerts) return;
   // Remove any existing popup
   const old = document.getElementById('dronePopup');
   if (old) old.remove();
@@ -1609,7 +1598,6 @@ function showTerminalPopup(det, isNew) {
   // (END PATCHED BUTTON & POPUP LOGIC)
 
   // --- Webhook logic (scoped, non-intrusive) ---
-  if (skipAlerts) return;
   try {
     const webhookUrl = localStorage.getItem('popupWebhookUrl');
     if (webhookUrl && webhookUrl.startsWith("http")) {
@@ -1923,20 +1911,15 @@ function updateMarkerButtons(markerType, id) {
 function openAliasPopup(mac) {
   let detection = window.tracked_pairs[mac] || {};
   let content = generatePopupContent(Object.assign({mac: mac}, detection), 'alias');
-
-  // Helper to force closeButton and our alias-popup class
-  function showAliasPopup(marker) {
-    marker.unbindPopup();
-    marker.bindPopup(content, {
-      closeButton: true,
-      className: 'leaflet-popup-content-wrapper alias-popup'
-    }).openPopup();
-  }
-
   if (droneMarkers[mac]) {
-    showAliasPopup(droneMarkers[mac]);
+    droneMarkers[mac].setPopupContent(content).openPopup();
   } else if (pilotMarkers[mac]) {
-    showAliasPopup(pilotMarkers[mac]);
+    pilotMarkers[mac].setPopupContent(content).openPopup();
+  } else {
+    L.popup({className: 'leaflet-popup-content-wrapper'})
+      .setLatLng(map.getCenter())
+      .setContent(content)
+      .openOn(map);
   }
 }
 
@@ -2324,27 +2307,6 @@ function updateComboList(data) {
       if (item.parentNode !== activePlaceholder) { activePlaceholder.appendChild(item); }
     } else {
       if (item.parentNode !== inactivePlaceholder) { inactivePlaceholder.appendChild(item); }
-      // Tooltip on hover for no-GPS drones
-      item.addEventListener('mouseenter', () => {
-        const det = data[mac];
-        const tooltip = document.createElement('div');
-        tooltip.className = 'inactive-tooltip';
-        tooltip.innerHTML = `
-          <strong>MAC:</strong> ${det.mac}<br>
-          <strong>Alias:</strong> ${aliases[mac] || 'None'}<br>
-          <strong>RSSI:</strong> ${det.rssi || 'N/A'}<br>
-          <strong>Basic ID:</strong> ${det.basic_id || 'N/A'}<br>
-          <strong>Pilot Lat/Long:</strong> ${det.pilot_lat || 'N/A'}, ${det.pilot_long || 'N/A'}<br>
-          <strong>FAA Data:</strong> ${det.faa_data ? JSON.stringify(det.faa_data) : 'N/A'}
-        `;
-        document.body.appendChild(tooltip);
-        const rect = item.getBoundingClientRect();
-        tooltip.style.top  = (rect.bottom + window.scrollY + 4) + 'px';
-        tooltip.style.left = (rect.left   + window.scrollX) + 'px';
-      });
-      item.addEventListener('mouseleave', () => {
-        document.querySelectorAll('.inactive-tooltip').forEach(t => t.remove());
-      });
     }
   });
 }
@@ -3034,8 +2996,7 @@ def download_cumulative_kml():
     )
 
 if __name__ == '__main__':
-    # Disable the Werkzeug reloader to avoid Bad file descriptor errors
-    app.run(host='0.0.0.0', port=5000, debug=True, use_reloader=False)
+    app.run(host='0.0.0.0', port=5000)
 
 
 app = Flask(__name__)
@@ -3179,3 +3140,42 @@ def index():
     return HTML_TEMPLATE
 
     
+# ----------------------
+# Webhook Proxy Endpoint
+# ----------------------
+
+# This endpoint a
+# accepts a POST with a "webhook_url" and relays the payload to the specified webhook URL.
+@app.route('/api/webhook_popup', methods=['POST'])
+def webhook_popup():
+    data = request.get_json()
+    webhook_url = data.get("webhook_url")
+    if not webhook_url:
+        return jsonify({"status": "error", "reason": "No webhook URL provided"}), 400
+    try:
+        response = requests.post(webhook_url, json=data, timeout=5)
+        return jsonify({"status": "ok", "response": response.status_code}), 200
+    except Exception as e:
+        logging.error(f"Webhook send error: {e}")
+        return jsonify({"status": "error", "message": str(e)}), 500
+# ----------------------
+# Webhook Relay Endpoint
+# ----------------------
+@app.route('/api/webhook_popup', methods=['POST'])
+def webhook_popup():
+    data = request.get_json()
+    webhook_url = data.get("webhook_url")
+    if not webhook_url:
+        return jsonify({"status": "error", "reason": "No webhook URL provided"}), 400
+    try:
+        clean_data = data.get("payload", {})
+        response = requests.post(webhook_url, json=clean_data, timeout=5)
+        return jsonify({"status": "ok", "response": response.status_code}), 200
+    except Exception as e:
+        logging.error(f"Webhook send error: {e}")
+        return jsonify({"status": "error", "message": str(e)}), 500
+# ----------------------
+# __main__ SSLContext block
+# ----------------------
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=5000, debug=True)
