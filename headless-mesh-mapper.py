@@ -545,6 +545,10 @@ class MeshMapper:
     def serial_reader(self, port):
         """Serial reader function for a thread"""
         ser = None
+        retry_count = 0
+        max_retries = 5
+        retry_delay = 1  # seconds
+        
         while True:
             # Try to open or re-open the serial port
             if ser is None or not getattr(ser, 'is_open', False):
@@ -554,12 +558,22 @@ class MeshMapper:
                     logger.info(f"Opened serial port {port} at {BAUD_RATE} baud.")
                     with serial_objs_lock:
                         serial_objs[port] = ser
+                    # Reset retry count on successful connection
+                    retry_count = 0
                 except Exception as e:
                     serial_connected_status[port] = False
-                    logger.error(f"Error opening serial port {port}: {e}")
-                    time.sleep(1)
-                    continue
-                
+                    retry_count += 1
+                    if retry_count <= max_retries:
+                        logger.warning(f"Error opening serial port {port} (attempt {retry_count}/{max_retries}): {e}")
+                        time.sleep(retry_delay)
+                        continue
+                    else:
+                        logger.error(f"Failed to open serial port {port} after {max_retries} attempts: {e}")
+                        # Increase delay between retries to avoid hammering the port
+                        time.sleep(5)
+                        retry_count = 0  # Reset and try again later
+                        continue
+                    
             try:
                 # Read incoming data
                 if ser.in_waiting:
@@ -598,6 +612,12 @@ class MeshMapper:
                     time.sleep(0.1)
                     
             except (serial.SerialException, OSError) as e:
+                # Don't immediately close the connection on transient errors
+                if "device reports readiness to read" in str(e) or "temporarily unavailable" in str(e):
+                    logger.warning(f"Transient error on {port}, waiting to recover: {e}")
+                    time.sleep(0.5)
+                    continue
+                
                 serial_connected_status[port] = False
                 logger.error(f"SerialException/OSError on {port}: {e}")
                 try:
@@ -622,7 +642,7 @@ class MeshMapper:
                 with serial_objs_lock:
                     serial_objs.pop(port, None)
                 time.sleep(1)
-                
+
     def start_zmq_client(self, endpoint):
         """Start a ZMQ client for a specific endpoint"""
         global zmq_contexts, zmq_sockets, zmq_threads
@@ -763,12 +783,15 @@ class MeshMapper:
                     
             except KeyboardInterrupt:
                 logger.info("Received keyboard interrupt, shutting down...")
-                # Call the cleanup function directly instead of as a method
-                self.cleanup()
                 
         except Exception as e:
             logger.error(f"Unexpected error in main loop: {e}", exc_info=True)
+            
+        # Always run cleanup on exit
+        try:
             self.cleanup()
+        except Exception as e:
+            logger.error(f"Error during cleanup: {e}", exc_info=True)
             
         logger.info("Mesh-Mapper Headless shutdown complete")
 
@@ -789,13 +812,16 @@ class MeshMapper:
         # ZMQ status
         zmq_status = [f"{endpoint}" for endpoint in zmq_sockets.keys()]
         
+        # Get the actual output directory path that's being used
+        output_dir = self.args.output_dir or os.path.dirname(os.path.abspath(__file__))
+        
         logger.info("=== Mesh-Mapper Status ===")
         logger.info(f"Active detections: {active_count}")
         logger.info(f"Total historical detections: {len(detection_history)}")
         logger.info(f"Serial ports: {', '.join(serial_status) or 'None'}")
         logger.info(f"ZMQ connections: {', '.join(zmq_status) or 'None'}")
         logger.info(f"Stale threshold: {staleThreshold}s")
-        logger.info(f"Output directory: {self.args.output_dir}")
+        logger.info(f"Output directory: {output_dir}")
         logger.info("========================")
         
     def cleanup(self):
