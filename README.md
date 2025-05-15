@@ -1,5 +1,18 @@
 # Drone Remote ID to Meshtastic with Mesh-Mapper API 📡
 
+## Table of Contents
+- [About](#about)
+- [Features](#features)
+- [Headless Mode](#headless-mesh-mapper)
+- [How It Works](#how-it-works)
+- [How to Connect and Map](#how-to-connect-and-map)
+- [API Endpoints & Usage](#api-endpoints--usage)
+- [Drone Remote ID Firmware (ESP32) Overview](#drone-remote-id-firmware-esp32-overview)
+- [Installation & Setup](#installation--setup)
+- [Acknowledgments](#acknowledgments)
+- [Order a PCB for this Project](#order-a-pcb-for-this-project)
+
+
 ## About
 
 ***Minimal WiFi & BT 4/5 Drone Remote ID Scanner***
@@ -10,7 +23,7 @@
 
 <img src="eye.png" alt="eye" style="width:50%; height:25%;">
 
-## Features 🌟
+## Features
 
 - **WiFi Monitoring:** Listens to WiFi management frames in promiscuous mode to capture Drone Remote ID packets.
 - **BT 4/5 Monitoring**: Listens for advertisements to capture Drone Remote ID packets in real time *(S3 dualcore fw only)*
@@ -31,7 +44,42 @@
 
 ---
 
-## How It Works 🔍
+# Headless Mesh Mapper
+
+Examples for different use cases:
+
+
+| Category | Command | Description |
+|----------|---------|-------------|
+| **Basic Serial Usage** | `python3 headless-mesh-mapper.py --serial-ports /dev/cu.usbmodem21101` | Use a single serial port |
+| | `python3 headless-mesh-mapper.py --serial-ports /dev/cu.usbmodem21101 /dev/cu.usbserial-1410` | Use multiple serial ports |
+| | `python3 headless-mesh-mapper.py --serial-ports /dev/cu.usbmodem21101 --baud-rate 9600` | Specify a custom baud rate |
+| **ZMQ Endpoints** | `python3 headless-mesh-mapper.py --zmq-endpoints tcp://127.0.0.1:5555` | Connect to a single ZMQ endpoint |
+| | `python3 headless-mesh-mapper.py --zmq-endpoints tcp://127.0.0.1:5555 tcp://192.168.1.5:5556` | Connect to multiple ZMQ endpoints |
+| | `python3 headless-mesh-mapper.py --serial-ports /dev/cu.usbmodem21101 --zmq-endpoints tcp://127.0.0.1:5555` | Use both serial ports and ZMQ |
+| **Output Options** | `python3 headless-mesh-mapper.py --serial-ports /dev/cu.usbmodem21101 --output-dir /path/to/output` | Specify a custom output directory |
+| | `python3 headless-mesh-mapper.py --serial-ports /dev/cu.usbmodem21101 --notifications` | Enable desktop notifications |
+| **Data Processing** | `python3 headless-mesh-mapper.py --serial-ports /dev/cu.usbmodem21101 --stale-threshold 5` | Set a custom stale threshold (in minutes) |
+| | `python3 headless-mesh-mapper.py --serial-ports /dev/cu.usbmodem21101 --status-interval 30` | Set status update interval (in seconds) |
+| **Integration** | `python3 headless-mesh-mapper.py --serial-ports /dev/cu.usbmodem21101 --webhook-url https://example.com/webhook` | Send detection events to a webhook URL |
+| **Logging** | `python3 headless-mesh-mapper.py --serial-ports /dev/cu.usbmodem21101 --log-level DEBUG` | Set a specific log level |
+| **Comprehensive** | `python3 headless-mesh-mapper.py --serial-ports /dev/cu.usbmodem21101 /dev/cu.usbserial-1420 --zmq-endpoints tcp://127.0.0.1:5555 --webhook-url https://example.com/webhook --output-dir ~/drone_data --notifications --stale-threshold 2 --status-interval 30 --log-level INFO` | Full-featured command combining multiple options |
+
+## Command Line Arguments
+
+| Argument | Description | Default |
+|----------|-------------|---------|
+| `--serial-ports` | Serial ports to use (space-separated list) | None |
+| `--baud-rate` | Baud rate for serial connections | 115200 |
+| `--zmq-endpoints` | ZMQ endpoints to connect to (format: tcp://ip:port) | None |
+| `--webhook-url` | Webhook URL to send detection events to | None |
+| `--output-dir` | Directory to store output files | Current directory |
+| `--notifications` | Enable desktop notifications for new detections | False |
+| `--stale-threshold` | Minutes after which a detection is considered stale | 1 |
+| `--status-interval` | Interval in seconds between status updates | 60 |
+| `--log-level` | Log level (DEBUG, INFO, WARNING, ERROR, CRITICAL) | INFO |
+
+## How It Works
 
 1. **ESP32 Firmware:**
    - **Initialization:**  
@@ -65,7 +113,7 @@
 
 ---
 
-## How to Connect and Map 🚀
+## How to Connect and Map
 
 1. **Connect Your ESP32:**
    - Flash the provided firmware onto your ESP32 (compatible with boards like the Xiao ESP32-C3).
@@ -89,7 +137,7 @@
 
 ---
 
-## API Endpoints & Usage 🚀
+## API Endpoints & Usage
 
 The Flask API provides several endpoints:
 
@@ -119,7 +167,7 @@ The Flask API provides several endpoints:
 
 ---
 
-## Drone Remote ID Firmware (ESP32) Overview 🛠️
+## Drone Remote ID Firmware (ESP32) Overview
 
 The ESP32 firmware is the heart of the wireless scanning operation:
 - **WiFi Scanning:**  
@@ -135,7 +183,7 @@ The ESP32 firmware is the heart of the wireless scanning operation:
 
 ---
 
-## Installation & Setup 🚀
+## Installation & Setup
 
 1. **Clone the Repository:**
 
