@@ -658,6 +658,17 @@ PORT_SELECTION_PAGE = '''
           <span class="slider"></span>
         </label>
       </div>
+
+      <div style="margin-top:4px; margin-bottom:4px; text-align:center;">
+        <label for="webhookUrl" style="font-size:18px; font-family:'Orbitron', monospace; color:#87CEEB;">Webhook URL</label><br>
+        <input type="text" id="webhookUrl" placeholder="https://example.com/webhook"
+                style="width:300px; background-color:#222; color:#87CEEB; border:1px solid #FF00FF; padding:4px; font-size:1em; outline:none;">
+      </div>
+      <div style="margin-top:4px; margin-bottom:4px; text-align:center;">
+        <button id="updateWebhookButton" style="border:1px solid lime; background-color:#333; color:#FF00FF; font-family:'Orbitron',monospace; padding:4px 8px; cursor:pointer; border-radius:4px;">
+          Update Webhook
+        </button>
+      </div>
       
       <div id="serialPorts">
         <div style="margin-bottom: 10px;">
@@ -1489,6 +1500,10 @@ HTML_PAGE = '''
           <button id="downloadKml">KML</button>
           <button id="downloadAliases">Aliases</button>
         </div>
+        <div id="downloadCumulativeButtons" style="display:flex; gap:4px; justify-content:center; margin-top:4px;">
+        <button id="downloadCumulativeCsv">Cumulative CSV</button>
+        <button id="downloadCumulativeKml">Cumulative KML</button>
+        </div>
       </div>
       
       <!-- Node Mode Section -->
@@ -1576,6 +1591,17 @@ window.addEventListener('click', function(event) {
   if (event.target === modal) {
     modal.style.display = 'none';
   }
+});
+// Cumulative file downlodas
+document.getElementById('downloadCumulativeCsv').addEventListener('click', function() {
+  this.style.backgroundColor = 'purple';
+  setTimeout(() => { this.style.backgroundColor = '#333'; }, 300);
+  window.location.href = '/download/cumulative_detections.csv';
+});
+document.getElementById('downloadCumulativeKml').addEventListener('click', function() {
+  this.style.backgroundColor = 'purple';
+  setTimeout(() => { this.style.backgroundColor = '#333'; }, 300);
+  window.location.href = '/download/cumulative.kml';
 });
 // --- Node Mode Main Switch & Polling Interval Sync ---
 document.addEventListener('DOMContentLoaded', () => {
@@ -2965,17 +2991,6 @@ def select_ports_get():
 
 @app.route('/select_ports', methods=['POST'])
 def select_ports_post():
-  
-# Store ZMQ settings in a global variable
-  app.config['ZMQ_ENABLED'] = zmq_enabled
-  
-  # Handle ZMQ endpoints from the form
-  zmq_ips = request.form.getlist('zmqIP[]')
-  zmq_ports = request.form.getlist('zmqPort[]')
-  
-  response = make_response(redirect(url_for('index')))
-  # Redirect to the main page
-  return response
   global SELECTED_PORTS, serial_connected_status
   
   # Check if this is a ZMQ-only submission
@@ -3028,9 +3043,15 @@ def select_ports_post():
   zmq_ips = request.form.getlist('zmqIP[]')
   zmq_ports = request.form.getlist('zmqPort[]')
   
+  # Start ZMQ client for each endpoint if enabled
+  if zmq_enabled and zmq_ips and zmq_ports:
+    for i in range(min(len(zmq_ips), len(zmq_ports))):
+      if zmq_ips[i] and zmq_ports[i]:
+        endpoint = f"tcp://{zmq_ips[i]}:{zmq_ports[i]}"
+        start_zmq_client(endpoint)
+        
   # Redirect to the main page
-  response = make_response(redirect(url_for('index')))
-  return response
+  return redirect(url_for('index'))
 
 def zmq_message_handler(endpoint):
   """Handle ZMQ messages from a specific endpoint"""
@@ -3199,6 +3220,24 @@ def api_detections_history():
         "type": "FeatureCollection",
         "features": features
     })
+
+@app.route('/download/cumulative_detections.csv')
+def download_cumulative_csv():
+    return send_file(
+      CUMULATIVE_CSV_FILENAME,
+      mimetype='text/csv',
+      as_attachment=True,
+      download_name='cumulative_detections.csv'
+  )
+  
+@app.route('/download/cumulative.kml')
+def download_cumulative_kml():
+    return send_file(
+      CUMULATIVE_KML_FILENAME,
+      mimetype='application/vnd.google-earth.kml+xml',
+      as_attachment=True,
+      download_name='cumulative.kml'
+  )
 
 @app.route('/api/reactivate/<mac>', methods=['POST'])
 def reactivate(mac):
