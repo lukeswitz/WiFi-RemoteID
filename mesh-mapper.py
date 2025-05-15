@@ -12,11 +12,19 @@ from datetime import datetime
 from flask import Flask, request, jsonify, redirect, url_for, render_template_string, send_file, make_response
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
-import zmq
-from zmq.error import ZMQError
+from flask import Flask, request, jsonify, redirect, url_for, render_template, render_template_string, send_file
 
-# Ensure file paths are absolute
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+# Server-side webhook URL (set via API)
+WEBHOOK_URL = None
+
+def set_server_webhook_url(url: str):
+    global WEBHOOK_URL
+    WEBHOOK_URL = url
+
+
+
 
 
 
@@ -173,26 +181,16 @@ def update_detection(detection):
 
     # If the new detection has invalid (0) drone coordinates...
     if not valid_drone:
-        # If there is an existing record with valid coordinates, update only non-coordinate fields.
-        if mac in tracked_pairs:
-            existing = tracked_pairs[mac]
-            if existing.get("drone_lat", 0) != 0 and existing.get("drone_long", 0) != 0:
-                # Update fields other than drone coordinates
-                for field in ['rssi', 'basic_id', 'drone_altitude']:
-                    if field in detection:
-                        existing[field] = detection[field]
-                # Update pilot coordinates only if they are valid (non zero)
-                new_pilot_lat = detection.get("pilot_lat", 0)
-                new_pilot_long = detection.get("pilot_long", 0)
-                if new_pilot_lat != 0:
-                    existing["pilot_lat"] = new_pilot_lat
-                if new_pilot_long != 0:
-                    existing["pilot_long"] = new_pilot_long
-                existing["last_update"] = time.time()
-                print(f"Ignored update for {mac} due to invalid drone coordinates, preserving previous valid coordinates.")
-                return
-        # No previous valid record exists: ignore the detection entirely.
-        print(f"Ignored detection for {mac} because drone coordinates are zero.")
+        print(f"No-GPS detection for {mac}; forwarding for popup and webhook.")
+        # Forward this no-GPS detection to the client
+        tracked_pairs[mac] = detection
+        detection_history.append(detection.copy())
+        # Server-side webhook firing for no-GPS detection
+        if WEBHOOK_URL:
+            try:
+                requests.post(WEBHOOK_URL, json=detection, timeout=5)
+            except Exception as e:
+                logging.error(f"Server webhook error: {e}")
         return
 
     # Otherwise, use the provided non-zero coordinates.
@@ -309,7 +307,7 @@ def query_remote_id(session, remote_id):
 # New FAA Query API Endpoint
 # ----------------------
 @app.route('/api/query_faa', methods=['POST'])
-def api_query_faa():
+def api_query_faa(): 
     data = request.get_json()
     mac = data.get("mac")
     remote_id = data.get("remote_id")
@@ -340,6 +338,36 @@ def api_query_faa():
         print("Error writing to FAA log CSV:", e)
     generate_kml()
     return jsonify({"status": "ok", "faa_data": faa_result})
+
+# ----------------------
+# FAA Data GET API Endpoint (by MAC or basic_id)
+# ----------------------
+
+@app.route('/api/faa/<identifier>', methods=['GET'])
+def api_get_faa(identifier):
+    """
+    Retrieve cached FAA data by MAC address or by basic_id (remote ID).
+    """
+    # First try lookup by MAC
+    if identifier in tracked_pairs and 'faa_data' in tracked_pairs[identifier]:
+        return jsonify({'status': 'ok', 'faa_data': tracked_pairs[identifier]['faa_data']})
+    # Then try lookup by basic_id
+    for mac, det in tracked_pairs.items():
+        if det.get('basic_id') == identifier and 'faa_data' in det:
+            return jsonify({'status': 'ok', 'faa_data': det['faa_data']})
+    # Fallback: search cached FAA data by remote_id first, then by MAC
+    for (c_mac, c_rid), faa_data in     FAA_CACHE.items():
+        if c_rid == identifier:
+            return jsonify({'status': 'ok', 'faa_data': faa_data})
+    for (c_mac, c_rid), faa_data in FAA_CACHE.items():
+        if c_mac == identifier:
+            return jsonify({'status': 'ok', 'faa_data': faa_data})
+    return jsonify({'status': 'error', 'message': 'No FAA data found for this identifier'}), 404
+
+
+
+# ----------------------
+
 
 # ----------------------
 # HTML & JS (UI) Section
@@ -714,6 +742,30 @@ HTML_PAGE = '''
       padding: 3px;
       cursor: pointer;
     }
+    .drone-item.no-gps {
+      position: relative;
+      border: 1px solid deepskyblue !important;
+    }
+    #activePlaceholder .drone-item.no-gps:hover::after {
+      content: "no gps lock";
+      position: absolute;
+      bottom: 100%;
+      left: 50%;
+      transform: translateX(-50%);
+      background-color: black;
+      color: #FF00FF;               /* neon pink text */
+      padding: 4px 6px;
+      border: 1px solid #FF00FF;    /* neon pink border */
+      border-radius: 2px;
+      white-space: nowrap;
+      font-family: monospace;
+      font-size: 0.75em;
+      z-index: 2000;
+    }
+    /* Highlight recently seen drones */
+    .drone-item.recent {
+      box-shadow: 0 0 0 1px lime;
+    }
     .placeholder {
       border: 2px solid transparent;
       border-image: linear-gradient(to right, lime 85%, yellow 15%) 1;
@@ -724,7 +776,7 @@ HTML_PAGE = '''
       max-height: 200px;
     }
     .selected { background-color: rgba(255,255,255,0.2); }
-    .leaflet-popup-content-wrapper { background-color: black; color: lime; font-family: monospace; border: 2px solid lime; border-radius: 10px;
+    .leaflet-popup > .leaflet-popup-content-wrapper { background-color: black; color: lime; font-family: monospace; border: 2px solid lime; border-radius: 10px;
       width: 220px !important;
       max-width: 220px;
       zoom: 1.15;
@@ -735,8 +787,51 @@ HTML_PAGE = '''
       white-space: normal;
     }
     .leaflet-popup-tip { background: lime; }
-    button { margin-top: 4px; padding: 3px; font-size: 0.8em; border: none; background-color: #333; color: lime; cursor: pointer; }
-    select { background-color: #333; color: lime; border: none; padding: 3px; }
+    /* Collapse inner Leaflet popup layers into the outer wrapper */
+    .leaflet-popup-content {
+      background: transparent !important;
+      padding: 0 !important;
+      box-shadow: none !important;
+      color: inherit !important;
+    }
+    .leaflet-popup-tip-container,
+    .leaflet-popup-tip {
+      background: transparent !important;
+      box-shadow: none !important;
+    }
+    /* Collapse inner popup layers for no-GPS popups */
+    .leaflet-popup.no-gps-popup > .leaflet-popup-content-wrapper {
+      /* ensure outer wrapper styling persists */
+      background-color: black !important;
+      color: lime !important;
+    }
+    .leaflet-popup.no-gps-popup .leaflet-popup-content {
+      background: transparent !important;
+      padding: 0 !important;
+      box-shadow: none !important;
+      color: inherit !important;
+    }
+    .leaflet-popup.no-gps-popup .leaflet-popup-tip-container,
+    .leaflet-popup.no-gps-popup .leaflet-popup-tip {
+      background: transparent !important;
+      box-shadow: none !important;
+    }
+    button {
+      margin-top: 4px;
+      padding: 3px;
+      font-size: 0.8em;
+      border: 1px solid lime;
+      background-color: #333;
+      color: lime;
+      cursor: pointer;
+      width: auto;
+    }
+    select {
+      background-color: #333;
+      color: lime;
+      border: none;
+      padding: 3px;
+    }
     .leaflet-control-zoom-in, .leaflet-control-zoom-out {
       background: rgba(0,0,0,0.8);
       color: lime;
@@ -1543,6 +1638,10 @@ async function queryFaaAPI(mac, remote_id) {
         });
         const result = await response.json();
         if (result.status === "ok") {
+            // Immediately update the in-memory tracked_pairs with the returned FAA data
+            if (window.tracked_pairs && window.tracked_pairs[mac]) {
+              window.tracked_pairs[mac].faa_data = result.faa_data;
+            }
             const faaDiv = document.getElementById("faaResult_" + mac);
             if (faaDiv) {
                 let faaData = result.faa_data;
