@@ -988,29 +988,33 @@ HTML_PAGE = '''
     
     /* USB status box styling - significantly repositioned to avoid overlap */
     #serialStatus {
-      position: fixed;
-      bottom: 10px;
-      right: 10px;
-      background: rgba(0,0,0,0.9);
-      padding: 5px;
-      border: 1px solid #FF00FF;
-      border-radius: 7px;
-      color: lime;
+      background: rgba(0,0,0,0.3); 
+      border: 1px solid #333; 
+      border-radius: 5px; 
+      padding: 8px;
+      margin: 0 auto;
+      max-height: 120px;
+      overflow-y: auto;
       font-family: monospace;
       font-size: 0.8em;
-      z-index: 1000;
     }
     
-    #serialStatus div { margin-bottom: 5px; }
-    /* Remove extra bottom padding from the last USB item */
-    #serialStatus div:last-child { margin-bottom: 0; }
-    
-    /* Add padding to inactive drones container to avoid overlap with status */
-    #inactivePlaceholder {
-      margin-bottom: 10px;
+    #serialStatus div { 
+      margin-bottom: 5px; 
+      padding: 3px 0;
+      border-bottom: 1px dotted #333;
     }
     
-    .usb-name { color: #FF00FF; } /* Neon pink for device names */
+    #serialStatus div:last-child { 
+      margin-bottom: 0; 
+      border-bottom: none;
+    }
+    
+    .usb-name { 
+      color: #FF00FF; 
+      margin-right: 5px;
+    }
+
     .drone-item {
       display: inline-block;
       border: 1px solid;
@@ -1516,7 +1520,7 @@ HTML_PAGE = '''
           </label>
         </div>
         <div style="color:#FF00FF; font-family:monospace; font-size:0.75em; white-space:normal; line-height:1.2; margin-top:8px; text-align:center;">
-          Poll interval of 1 second instead of 200ms. Lower CPU use, more reliable for node-mode.
+          Poll interval of 2 seconds instead of 200ms. Lower CPU use, more reliable.
         </div>
       </div>
       
@@ -1529,9 +1533,9 @@ HTML_PAGE = '''
             <span class="slider"></span>
           </label>
         </div>
-      <div style="color:#FF00FF;font-family:monospace;font-size:0.75em;white-space:normal;line-height:1.2;margin-top:8px;text-align:center;">
-        Connect to ZMQ decoder via direct IP connection
-      </div>
+        <div style="color:#FF00FF;font-family:monospace;font-size:0.75em;white-space:normal;line-height:1.2;margin-top:8px;text-align:center;">
+          Connect to ZMQ decoder via direct IP connection
+        </div>
         <div style="margin-top:10px;">
           <div style="display:flex; justify-content:center; align-items:center;">
             <input type="text" id="zmqIP" placeholder="127.0.0.1" style="background-color:#222;color:#FF00FF;border:1px solid #FF00FF;width:55%;padding:4px;margin-right:5px;">
@@ -1542,6 +1546,13 @@ HTML_PAGE = '''
         </div>
       </div>
       
+      <!-- Serial Connections Status Section -->
+      <div style="margin: 15px 0; border-top: 1px solid #333; padding-top: 15px;">
+        <h4 style="color: #FF00FF; text-align: center; margin-bottom: 10px;">Device Connections</h4>
+        <div id="serialStatus" style="background:rgba(0,0,0,0.3); border:1px solid #333; border-radius:5px; padding:8px; max-height:120px; overflow-y:auto;">
+          <!-- USB port statuses will be injected here -->
+        </div>
+      </div>
       <!-- Staleout Slider -->
       <div style="margin: 15px 0; border-top: 1px solid #333; padding-top: 15px;">
         <label style="color:lime; font-family:monospace; margin-bottom:8px; display:block; text-align:center;">Staleout Time</label>
@@ -1550,9 +1561,7 @@ HTML_PAGE = '''
         <div id="staleoutValue" style="color:lime; font-family:monospace; text-align:center; margin-top:8px;">1 min</div>
       </div>
     </div>
-<div id="serialStatus">
-  <!-- USB port statuses will be injected here -->
-</div>
+  </div>
 <script>
   // Track drones already alerted for no GPS
   const alertedNoGpsDrones = new Set();
@@ -1637,7 +1646,7 @@ document.addEventListener('DOMContentLoaded', () => {
       const enabled = mainSwitch.checked;
       localStorage.setItem('nodeMode', enabled);
       clearInterval(updateDataInterval);
-      updateDataInterval = setInterval(updateData, enabled ? 1000 : 100);
+      updateDataInterval = setInterval(updateData, enabled ? 2500 : 300);
       // Sync popup toggle if open
       const popupSwitch = document.getElementById('nodeModePopupSwitch');
       if (popupSwitch) popupSwitch.checked = enabled;
@@ -1645,15 +1654,15 @@ document.addEventListener('DOMContentLoaded', () => {
   }
   // Start polling based on current setting
   updateData();
-  updateDataInterval = setInterval(updateData, mainSwitch && mainSwitch.checked ? 1000 : 100);
+  updateDataInterval = setInterval(updateData, mainSwitch && mainSwitch.checked ? 2500 : 300);
   // Adaptive polling: slow down during map interactions
   map.on('zoomstart dragstart', () => {
     clearInterval(updateDataInterval);
-    updateDataInterval = setInterval(updateData, 500);
+    updateDataInterval = setInterval(updateData, 1500);
   });
   map.on('zoomend dragend', () => {
     clearInterval(updateDataInterval);
-    const interval = mainSwitch && mainSwitch.checked ? 1000 : 100;
+    const interval = mainSwitch && mainSwitch.checked ? 2500 : 300;
     updateDataInterval = setInterval(updateData, interval);
   });
 
@@ -2803,7 +2812,7 @@ function getDynamicSize() {
   return base * 1.15;
 }
 
-// Updates selected USB port statuses and ZMQ status
+/// Updates selected USB port statuses and ZMQ status
 async function updateSerialStatus() {
   try {
     const response = await fetch(window.location.origin + '/api/serial_status')
@@ -2812,13 +2821,13 @@ async function updateSerialStatus() {
     statusDiv.innerHTML = "";
     
     // Add serial port statuses
-    if (serialData.statuses) {
-      for (const port in serialData.statuses) {
+    if (data.statuses) {
+      for (const port in data.statuses) {
         const div = document.createElement("div");
         // Device name in neon pink and status color accordingly.
         div.innerHTML = '<span class="usb-name">' + port + '</span>: ' +
-          (serialData.statuses[port] ? '<span style="color: lime;">Connected</span>' : 
-                                      '<span style="color: red;">Disconnected</span>');
+          (data.statuses[port] ? '<span style="color: lime;">Connected</span>' : 
+                                '<span style="color: red;">Disconnected</span>');
         statusDiv.appendChild(div);
       }
     }
@@ -2938,6 +2947,52 @@ function updateColor(mac, hue) {
 </body>
 </html>
 <script>
+  // Download buttons click handlers with purple flash
+  document.getElementById('downloadCsv').addEventListener('click', function() {
+    this.style.backgroundColor = 'purple';
+    setTimeout(() => { this.style.backgroundColor = '#333'; }, 300);
+    window.location.href = '/download/csv';
+  });
+  document.getElementById('downloadKml').addEventListener('click', function() {
+    this.style.backgroundColor = 'purple';
+    setTimeout(() => { this.style.backgroundColor = '#333'; }, 300);
+    window.location.href = '/download/kml';
+  });
+  document.getElementById('downloadAliases').addEventListener('click', function() {
+    this.style.backgroundColor = 'purple';
+    setTimeout(() => { this.style.backgroundColor = '#333'; }, 300);
+    window.location.href = '/download/aliases';
+  });
+  document.getElementById('downloadCumulativeCsv').addEventListener('click', function() {
+    window.location = '/download/cumulative_detections.csv';
+  });
+  document.getElementById('downloadCumulativeKml').addEventListener('click', function() {
+    window.location = '/download/cumulative.kml';
+  });
+  
+  // Save ZMQ settings when the Update button is clicked
+  document.getElementById('applyZmqSettings').addEventListener('click', function() {
+    const ip = document.getElementById('zmqIP').value;
+    const port = document.getElementById('zmqPort').value;
+    
+    // Save to localStorage
+    localStorage.setItem('zmqIP', ip);
+    localStorage.setItem('zmqPort', port);
+    
+    // Visual feedback
+    this.style.backgroundColor = 'green';
+    setTimeout(() => this.style.backgroundColor = '#333', 500);
+  });
+
+  // Load saved settings on page load
+  window.addEventListener('load', function() {
+    const savedIP = localStorage.getItem('zmqIP');
+    const savedPort = localStorage.getItem('zmqPort');
+    
+    if (savedIP) document.getElementById('zmqIP').value = savedIP;
+    if (savedPort) document.getElementById('zmqPort').value = savedPort;
+  });
+  
   if ('serviceWorker' in navigator) {
     navigator.serviceWorker.register('/sw.js')
       .then(reg => console.log('Service Worker registered', reg))
@@ -3316,74 +3371,74 @@ def api_paths():
 # Serial Reader Threads: Each selected port gets its own thread.
 # ----------------------
 def serial_reader(port):
-    ser = None
-    while True:
-        # Try to open or re-open the serial port
-        if ser is None or not getattr(ser, 'is_open', False):
-            try:
-                ser = serial.Serial(port, BAUD_RATE, timeout=1)
-                serial_connected_status[port] = True
-                print(f"Opened serial port {port} at {BAUD_RATE} baud.")
-                with serial_objs_lock:
-                    serial_objs[port] = ser
-            except Exception as e:
-                serial_connected_status[port] = False
-                print(f"Error opening serial port {port}: {e}")
-                time.sleep(1)
-                continue
-
+  ser = None
+  while True:
+    # Try to open or re-open the serial port
+    if ser is None or not getattr(ser, 'is_open', False):
+      try:
+        ser = serial.Serial(port, BAUD_RATE, timeout=1)
+        serial_connected_status[port] = True
+        print(f"Opened serial port {port} at {BAUD_RATE} baud.")
+        with serial_objs_lock:
+          serial_objs[port] = ser
+      except Exception as e:
+        serial_connected_status[port] = False
+        print(f"Error opening serial port {port}: {e}")
+        time.sleep(1)
+        continue
+      
+    try:
+      # Read incoming data
+      if ser.in_waiting:
+        line = ser.readline().decode('utf-8', errors='ignore').strip()
+        if not line:
+          continue
+        # JSON extraction and detection handling...
+        if '{' in line:
+          json_str = line[line.find('{'):]
+        else:
+          json_str = line
         try:
-            # Read incoming data
-            if ser.in_waiting:
-                line = ser.readline().decode('utf-8', errors='ignore').strip()
-                if not line:
-                    continue
-                # JSON extraction and detection handling...
-                if '{' in line:
-                    json_str = line[line.find('{'):]
-                else:
-                    json_str = line
-                try:
-                    detection = json.loads(json_str)
-                    # MAC tracking logic...
-                    if 'mac' in detection:
-                        last_mac_by_port[port] = detection['mac']
-                    elif port in last_mac_by_port:
-                        detection['mac'] = last_mac_by_port[port]
-                except json.JSONDecodeError:
-                    continue
-                if 'remote_id' in detection and 'basic_id' not in detection:
-                    detection['basic_id'] = detection['remote_id']
-                if 'heartbeat' in detection:
-                    continue
-                update_detection(detection)
-            else:
-                time.sleep(0.1)
-        except (serial.SerialException, OSError) as e:
-            serial_connected_status[port] = False
-            print(f"SerialException/OSError on {port}: {e}")
-            try:
-                if ser and ser.is_open:
-                    ser.close()
-            except Exception:
-                pass
-            ser = None
-            with serial_objs_lock:
-                serial_objs.pop(port, None)
-            time.sleep(1)
-        except Exception as e:
-            serial_connected_status[port] = False
-            print(f"Unexpected error on {port}: {e}")
-            try:
-                if ser and ser.is_open:
-                    ser.close()
-            except Exception:
-                pass
-            ser = None
-            with serial_objs_lock:
-                serial_objs.pop(port, None)
-            time.sleep(1)
-
+          detection = json.loads(json_str)
+          # MAC tracking logic...
+          if 'mac' in detection:
+            last_mac_by_port[port] = detection['mac']
+          elif port in last_mac_by_port:
+            detection['mac'] = last_mac_by_port[port]
+        except json.JSONDecodeError:
+          continue
+        if 'remote_id' in detection and 'basic_id' not in detection:
+          detection['basic_id'] = detection['remote_id']
+        if 'heartbeat' in detection:
+          continue
+        update_detection(detection)
+      else:
+        time.sleep(0.1)
+    except (serial.SerialException, OSError) as e:
+      serial_connected_status[port] = False
+      print(f"SerialException/OSError on {port}: {e}")
+      try:
+        if ser and ser.is_open:
+          ser.close()
+      except Exception:
+        pass
+      ser = None
+      with serial_objs_lock:
+        serial_objs.pop(port, None)
+      time.sleep(1)
+    except Exception as e:
+      serial_connected_status[port] = False
+      print(f"Unexpected error on {port}: {e}")
+      try:
+        if ser and ser.is_open:
+          ser.close()
+      except Exception:
+        pass
+      ser = None
+      with serial_objs_lock:
+        serial_objs.pop(port, None)
+      time.sleep(1)
+      
 def start_serial_thread(port):
     thread = threading.Thread(target=serial_reader, args=(port,), daemon=True)
     thread.start()
