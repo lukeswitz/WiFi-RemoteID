@@ -763,6 +763,7 @@ class MeshMapper:
                     
             except KeyboardInterrupt:
                 logger.info("Received keyboard interrupt, shutting down...")
+                # Call the cleanup function directly instead of as a method
                 self.cleanup()
                 
         except Exception as e:
@@ -770,7 +771,7 @@ class MeshMapper:
             self.cleanup()
             
         logger.info("Mesh-Mapper Headless shutdown complete")
-        
+
     def print_status(self):
         """Print status information to the console"""
         # Count active detections
@@ -797,6 +798,7 @@ class MeshMapper:
         logger.info(f"Output directory: {self.args.output_dir}")
         logger.info("========================")
         
+    def cleanup(self):
         """Clean up resources before exit"""
         logger.info("Cleaning up resources...")
         
