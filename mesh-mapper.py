@@ -16,7 +16,6 @@ from typing import Optional, List
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from flask import Flask, request, jsonify, redirect, url_for, render_template, render_template_string, send_file
-
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # Server-side webhook URL (set via API)
@@ -26,16 +25,10 @@ def set_server_webhook_url(url: str):
     global WEBHOOK_URL
     WEBHOOK_URL = url
 
-
-
-
-
-
 app = Flask(__name__)
 # Initialize Socket.IO for browser and peer-server synchronization
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-
 
 # ----------------------
 # Global Variables & Files
