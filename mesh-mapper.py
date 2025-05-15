@@ -1417,6 +1417,8 @@ window.onload = function() {
           }
         }
       }
+      // Prevent webhook/alert firing for restored drones on page reload
+      Object.keys(window.tracked_pairs).forEach(mac => alertedNoGpsDrones.add(mac));
     } catch(e) {
       console.error("Error parsing trackedPairs from localStorage", e);
     }
@@ -1463,6 +1465,8 @@ async function updateAliases() {
     const response = await fetch('/api/aliases');
     aliases = await response.json();
     updateComboList(window.tracked_pairs);
+      // Persist detection state across page reloads
+      localStorage.setItem("trackedPairs", JSON.stringify(window.tracked_pairs));
   } catch (error) { console.error("Error fetching aliases:", error); }
 }
 
