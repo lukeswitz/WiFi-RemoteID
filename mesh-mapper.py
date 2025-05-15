@@ -16,7 +16,16 @@ from typing import Optional, List
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from flask import Flask, request, jsonify, redirect, url_for, render_template, render_template_string, send_file
+
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+# Server-side webhook URL (set via API)
+WEBHOOK_URL = None
+
+def set_server_webhook_url(url: str):
+    global WEBHOOK_URL
+    WEBHOOK_URL = url
+
 
 
 
@@ -237,6 +246,12 @@ def update_detection(detection):
         # Forward this no-GPS detection to the client
         tracked_pairs[mac] = detection
         detection_history.append(detection.copy())
+        # Server-side webhook firing for no-GPS detection
+        if WEBHOOK_URL:
+            try:
+                requests.post(WEBHOOK_URL, json=detection, timeout=5)
+            except Exception as e:
+                logging.error(f"Server webhook error: {e}")
         return
 
         # Write to session CSV
@@ -449,7 +464,7 @@ def webhook_popup():
 # New FAA Query API Endpoint
 # ----------------------
 @app.route('/api/query_faa', methods=['POST'])
-def api_query_faa():
+def api_query_faa(): 
     data = request.get_json()
     mac = data.get("mac")
     remote_id = data.get("remote_id")
@@ -504,7 +519,7 @@ def api_get_faa(identifier):
         if det.get('basic_id') == identifier and 'faa_data' in det:
             return jsonify({'status': 'ok', 'faa_data': det['faa_data']})
     # Fallback: search cached FAA data by remote_id first, then by MAC
-    for (c_mac, c_rid), faa_data in FAA_CACHE.items():
+    for (c_mac, c_rid), faa_data in     FAA_CACHE.items():
         if c_rid == identifier:
             return jsonify({'status': 'ok', 'faa_data': faa_data})
     for (c_mac, c_rid), faa_data in FAA_CACHE.items():
@@ -916,7 +931,7 @@ HTML_PAGE = '''
       position: relative;
       border: 1px solid deepskyblue !important;
     }
-    .drone-item.no-gps:hover::after {
+    #activePlaceholder .drone-item.no-gps:hover::after {
       content: "no gps lock";
       position: absolute;
       bottom: 100%;
@@ -946,7 +961,7 @@ HTML_PAGE = '''
       max-height: 200px;
     }
     .selected { background-color: rgba(255,255,255,0.2); }
-    .leaflet-popup-content-wrapper { background-color: black; color: lime; font-family: monospace; border: 2px solid lime; border-radius: 10px;
+    .leaflet-popup > .leaflet-popup-content-wrapper { background-color: black; color: lime; font-family: monospace; border: 2px solid lime; border-radius: 10px;
       width: 220px !important;
       max-width: 220px;
       zoom: 1.15;
@@ -966,6 +981,23 @@ HTML_PAGE = '''
     }
     .leaflet-popup-tip-container,
     .leaflet-popup-tip {
+      background: transparent !important;
+      box-shadow: none !important;
+    }
+    /* Collapse inner popup layers for no-GPS popups */
+    .leaflet-popup.no-gps-popup > .leaflet-popup-content-wrapper {
+      /* ensure outer wrapper styling persists */
+      background-color: black !important;
+      color: lime !important;
+    }
+    .leaflet-popup.no-gps-popup .leaflet-popup-content {
+      background: transparent !important;
+      padding: 0 !important;
+      box-shadow: none !important;
+      color: inherit !important;
+    }
+    .leaflet-popup.no-gps-popup .leaflet-popup-tip-container,
+    .leaflet-popup.no-gps-popup .leaflet-popup-tip {
       background: transparent !important;
       box-shadow: none !important;
     }
@@ -1834,6 +1866,10 @@ async function queryFaaAPI(mac, remote_id) {
         });
         const result = await response.json();
         if (result.status === "ok") {
+            // Immediately update the in-memory tracked_pairs with the returned FAA data
+            if (window.tracked_pairs && window.tracked_pairs[mac]) {
+              window.tracked_pairs[mac].faa_data = result.faa_data;
+            }
             const faaDiv = document.getElementById("faaResult_" + mac);
             if (faaDiv) {
                 let faaData = result.faa_data;
