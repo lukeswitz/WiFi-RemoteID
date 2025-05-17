@@ -337,7 +337,7 @@ void setup() {
 void loop() {
   unsigned long current_millis = millis();
     if ((current_millis - last_status) > 60000UL) {
-      Serial.println("{\"   [+] Device is active and scanning...\"}");
+      Serial.println("   [+] Device is active and scanning...");
       last_status = current_millis;
     }
 }
